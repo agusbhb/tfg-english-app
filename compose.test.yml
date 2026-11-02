@@ -1,0 +1,32 @@
+# Proyecto independiente: docker compose -p trainer-tests -f compose.test.yml ...
+services:
+  mongodb-test:
+    image: mongo:8.0.15
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: test_admin
+      MONGO_INITDB_ROOT_PASSWORD: local_isolated_test_admin_password
+      MONGODB_DB: trainer_test_bootstrap
+      MONGO_APP_USER: trainer_test
+      MONGO_APP_PASSWORD: local_isolated_test_app_password
+      MONGO_TEST_MODE: "true"
+    tmpfs:
+      - /data/db
+    volumes:
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/01-app-user.js:ro
+    healthcheck:
+      test: [CMD, mongosh, --quiet, --eval, "db.adminCommand({ping: 1}).ok === 1 ? quit(0) : quit(1)"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+  tests:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    environment:
+      # Esta instancia NO tiene red ni volumen compartidos con desarrollo.
+      TEST_MONGODB_URI: mongodb://trainer_test:local_isolated_test_app_password@mongodb-test:27017/?authSource=admin
+      REQUIRE_MONGODB_TESTS: "1"
+    depends_on:
+      mongodb-test:
+        condition: service_healthy

@@ -1,0 +1,11 @@
+FROM python:3.12.14-slim-bookworm
+WORKDIR /workspace/backend
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY requirements.txt requirements-dev.txt ./
+RUN --mount=type=secret,id=pip_ca_bundle \
+    if [ -f /run/secrets/pip_ca_bundle ]; then export PIP_CERT=/run/secrets/pip_ca_bundle; fi; \
+    pip install --no-cache-dir -r requirements-dev.txt
+COPY . .
+# La estructura coincide con el checkout para exportar rutas relativas portables.
+WORKDIR /workspace
+CMD ["pytest", "backend/tests", "--cov", "--cov-config=backend/pyproject.toml", "--cov-report=term-missing", "--cov-report=xml:coverage.xml"]
