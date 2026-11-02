@@ -1,0 +1,62 @@
+services:
+  mongodb:
+    image: mongo:8.0.15
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?Configura MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Configura MONGO_ROOT_PASSWORD}
+      MONGODB_DB: ${MONGODB_DB:-trainer}
+      MONGO_APP_USER: ${MONGO_APP_USER:?Configura MONGO_APP_USER}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Configura MONGO_APP_PASSWORD}
+    volumes:
+      - mongodb_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/01-app-user.js:ro
+    healthcheck:
+      test: [CMD, mongosh, --quiet, --eval, "db.adminCommand({ping: 1}).ok === 1 ? quit(0) : quit(1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  backend:
+    build: ./backend
+    environment:
+      MONGODB_URI: mongodb://${MONGO_APP_USER:?Configura MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Configura MONGO_APP_PASSWORD}@mongodb:27017/${MONGODB_DB:-trainer}?authSource=${MONGODB_DB:-trainer}
+      MONGODB_DB: ${MONGODB_DB:-trainer}
+      JWT_SECRET: ${JWT_SECRET:?Genera JWT_SECRET}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}
+    ports:
+      - 127.0.0.1:8000:8000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build: ./frontend
+    ports:
+      - 127.0.0.1:5173:80
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  mongo-express:
+    image: mongo-express:1.0.2
+    profiles: [tools]
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_ROOT_USER:?Configura MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD:?Configura MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
+      ME_CONFIG_BASICAUTH_ENABLED: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USER:?Configura MONGO_EXPRESS_USER}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASSWORD:?Configura MONGO_EXPRESS_PASSWORD}
+    ports:
+      - 127.0.0.1:8081:8081
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongodb_data:
