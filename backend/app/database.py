@@ -41,3 +41,32 @@ async def initialize_database(database: AsyncDatabase) -> None:
     await database.Tests.create_index(
         [("usuario_id", ASCENDING), ("fechas.generacion", DESCENDING)], name="historial_usuario"
     )
+    await ensure_pending_index(database)
+
+
+async def ensure_pending_index(database: AsyncDatabase) -> None:
+    """Conserva el pendiente más antiguo; elimina solo duplicados aún pendientes."""
+    groups = database.Tests.aggregate(
+        [
+            {"$match": {"estado": "pendiente"}},
+            {"$sort": {"fechas.generacion": 1, "_id": 1}},
+            {
+                "$group": {
+                    "_id": {"usuario": "$usuario_id", "tema": "$tema_id"},
+                    "ids": {"$push": "$_id"},
+                    "count": {"$sum": 1},
+                }
+            },
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+    )
+    async for group in await groups:
+        await database.Tests.delete_many({"_id": {"$in": group["ids"][1:]}, "estado": "pendiente"})
+    # Si aparecen duplicados durante la migración, el índice falla y el arranque
+    # no acepta peticiones sin la garantía de unicidad.
+    await database.Tests.create_index(
+        [("usuario_id", ASCENDING), ("tema_id", ASCENDING)],
+        unique=True,
+        partialFilterExpression={"estado": "pendiente"},
+        name="pending_user_topic_unique",
+    )

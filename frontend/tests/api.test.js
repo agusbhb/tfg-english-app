@@ -2,6 +2,69 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiError, createApiClient } from '../src/api.js'
 
 describe('Contrato HTTP y errores', () => {
+  it('guarda una sola pregunta por PATCH con autenticación', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response('{}'))
+    await createApiClient(fetch).saveDraft(
+      'attempt',
+      { pregunta_id: 'q1', respuesta_dada: 'x' },
+      'token',
+    )
+    const [url, options] = fetch.mock.calls[0]
+    expect(url).toBe('/api/tests/attempt/borrador')
+    expect(options.method).toBe('PATCH')
+    expect(options.headers.Authorization).toBe('Bearer token')
+    expect(JSON.parse(options.body)).toEqual({
+      pregunta_id: 'q1',
+      respuesta_dada: 'x',
+    })
+  })
+  it('consulta el pendiente y descarta el ID exacto con autenticación', async () => {
+    const fetch = vi.fn().mockImplementation(async () => new Response('null'))
+    const client = createApiClient(fetch)
+    expect(await client.pendingTest('topic', 'token')).toBeNull()
+    await client.discardTest('attempt', 'token')
+    expect(fetch.mock.calls[0][0]).toBe('/api/tests/pendiente?tema_id=topic')
+    expect(fetch.mock.calls[1][0]).toBe('/api/tests/attempt')
+    expect(fetch.mock.calls[1][1].method).toBe('DELETE')
+    expect(fetch.mock.calls[1][1].headers.Authorization).toBe('Bearer token')
+  })
+  it('envía las peticiones privadas de práctica con Bearer y JSON', async () => {
+    const fetch = vi.fn().mockImplementation(async () => new Response('{}'))
+    const client = createApiClient(fetch)
+    await client.createTest({ tema_id: 'topic' }, 'token')
+    await client.test('attempt', 'token')
+    await client.submitTest('attempt', { respuestas: [] }, 'token')
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+      '/api/tests',
+      '/api/tests/attempt',
+      '/api/tests/attempt/respuestas',
+    ])
+    expect(
+      fetch.mock.calls.every(
+        (call) => call[1].headers.Authorization === 'Bearer token',
+      ),
+    ).toBe(true)
+    expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ respuestas: [] })
+  })
+  it.each([401, 404, 409, 422])(
+    'presenta mensajes de práctica para el estado %s',
+    async (status) => {
+      const fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: 'Mensaje de práctica' }), {
+          status,
+        }),
+      )
+      await expect(
+        createApiClient(fetch).test('attempt', 'token'),
+      ).rejects.toMatchObject({
+        status,
+        message:
+          status === 401
+            ? 'Tu sesión ya no es válida. Inicia sesión de nuevo.'
+            : 'Mensaje de práctica',
+      })
+    },
+  )
   it('envía los campos exactos de registro por JSON sin credenciales del navegador', async () => {
     const fetch = vi
       .fn()

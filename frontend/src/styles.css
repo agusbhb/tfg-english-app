@@ -5,6 +5,46 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
+.practice-layout {
+  max-width: 600px;
+  margin: 40px auto;
+  overflow-wrap: anywhere;
+}
+.test-layout {
+  max-width: 740px;
+}
+.exercise-card {
+  background: white;
+  border: 1px solid #dce1d5;
+  border-radius: 10px;
+  padding: 20px;
+  margin: 16px 0;
+}
+.exercise-card h2 {
+  font-size: 17px;
+}
+dialog {
+  width: calc(100% - 40px);
+  max-width: 440px;
+  border: 1px solid #dce1d5;
+  border-radius: 14px;
+  padding: 26px;
+  color: #173b33;
+}
+dialog::backdrop {
+  background: #173b3377;
+}
+.review-list {
+  max-height: 240px;
+  overflow: auto;
+  padding-left: 22px;
+}
+.review-list li {
+  margin-bottom: 12px;
+}
+.review-list small {
+  display: block;
+}
 * {
   box-sizing: border-box;
 }

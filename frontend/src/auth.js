@@ -55,7 +55,23 @@ export function createAuth(client = api) {
     }
   }
 
+  async function authenticated(operation) {
+    if (!token) throw new ApiError('Inicia sesión para continuar.', 401)
+    const current = revision
+    try {
+      const result = await operation(token)
+      if (current !== revision)
+        throw new ApiError('La sesión ha terminado.', 401)
+      return result
+    } catch (error) {
+      if (current === revision && error.status === 401)
+        logout('Tu sesión ya no es válida. Inicia sesión de nuevo.')
+      throw error
+    }
+  }
+
   return {
+    authenticated,
     state: readonly(state),
     login,
     loadProfile,

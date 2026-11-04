@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from bson import ObjectId
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
+from app import practice
 from app.config import Settings
 from app.database import create_client, initialize_database
 from app.models import (
@@ -19,9 +22,13 @@ from app.models import (
     validate_catalog,
 )
 from app.schemas import (
+    AnswerInput,
+    CreateTestRequest,
     LoginRequest,
+    PublicTest,
     RegisterRequest,
     SubjectResponse,
+    SubmitAnswersRequest,
     TokenResponse,
     UserResponse,
 )
@@ -87,7 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE", "PATCH"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -168,5 +175,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/users/me", response_model=UserResponse, tags=["Usuarios"])
     async def me(user: UserResponse = Depends(current_user)):
         return user
+
+    @app.post("/tests", response_model=PublicTest, status_code=201, tags=["Práctica"])
+    async def new_test(
+        payload: CreateTestRequest, request: Request, user: UserResponse = Depends(current_user)
+    ):
+        return practice.public_test(
+            await practice.create_test(request.app.state.database, user, payload.tema_id)
+        )
+
+    @app.get("/tests/pendiente", response_model=PublicTest | None, tags=["Práctica"])
+    async def get_pending(
+        tema_id: Annotated[str, Query(pattern=r"^[0-9a-fA-F]{24}$")],
+        request: Request,
+        user: UserResponse = Depends(current_user),
+    ):
+        test = await practice.pending_test(request.app.state.database, user, ObjectId(tema_id))
+        return practice.public_test(test) if test else None
+
+    @app.delete("/tests/{test_id}", tags=["Práctica"])
+    async def discard(
+        test_id: Annotated[str, Path(pattern=r"^[0-9a-fA-F]{24}$")],
+        request: Request,
+        user: UserResponse = Depends(current_user),
+    ):
+        await practice.discard_test(request.app.state.database, user.id, ObjectId(test_id))
+        return {"descartado": True}
+
+    @app.patch("/tests/{test_id}/borrador", response_model=AnswerInput, tags=["Práctica"])
+    async def patch_draft(
+        test_id: Annotated[str, Path(pattern=r"^[0-9a-fA-F]{24}$")],
+        payload: AnswerInput,
+        request: Request,
+        user: UserResponse = Depends(current_user),
+    ):
+        return await practice.save_draft(
+            request.app.state.database, user.id, ObjectId(test_id), payload
+        )
+
+    @app.get("/tests/{test_id}", response_model=PublicTest, tags=["Práctica"])
+    async def get_test(
+        test_id: Annotated[str, Path(pattern=r"^[0-9a-fA-F]{24}$")],
+        request: Request,
+        user: UserResponse = Depends(current_user),
+    ):
+        return practice.public_test(
+            await practice.own_test(request.app.state.database, user.id, ObjectId(test_id))
+        )
+
+    @app.post("/tests/{test_id}/respuestas", response_model=PublicTest, tags=["Práctica"])
+    async def submit(
+        test_id: Annotated[str, Path(pattern=r"^[0-9a-fA-F]{24}$")],
+        payload: SubmitAnswersRequest,
+        request: Request,
+        user: UserResponse = Depends(current_user),
+    ):
+        return practice.public_test(
+            await practice.submit_test(
+                request.app.state.database, user.id, ObjectId(test_id), payload.respuestas
+            )
+        )
 
     return app

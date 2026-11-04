@@ -4,10 +4,24 @@ import { sessionGuard } from './sessionGuard.js'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 import WelcomeView from './views/WelcomeView.vue'
+import PracticeView from './views/PracticeView.vue'
+import TestView from './views/TestView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
+    {
+      path: '/practicar',
+      name: 'practice',
+      component: PracticeView,
+      meta: { private: true },
+    },
+    {
+      path: '/tests/:id',
+      name: 'test',
+      component: TestView,
+      meta: { private: true },
+    },
     { path: '/', redirect: '/login' },
     {
       path: '/login',
