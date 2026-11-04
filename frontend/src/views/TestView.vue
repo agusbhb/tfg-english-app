@@ -175,7 +175,7 @@ watch(() => route.params.id, load)
               >{{ saveWarnings[question.pregunta_id] }}</small
             >
           </div>
-          <button ref="reviewButton" class="primary-button">
+          <button ref="reviewButton" type="submit" class="primary-button">
             Revisar y entregar
           </button>
         </fieldset>
@@ -204,10 +204,10 @@ watch(() => route.params.id, load)
           Las respuestas vacías contarán como incorrectas. Una vez entregado no
           podrás cambiarlo.
         </p>
-        <button class="secondary-button" :disabled="sending" @click="close">
+        <button class="secondary-button" type="button" :disabled="sending" @click="close">
           Volver y revisar
         </button>
-        <button class="primary-button" :disabled="sending" @click="submit">
+        <button class="primary-button" type="button" :disabled="sending" @click="submit">
           {{ sending ? 'Entregando…' : 'Confirmar entrega' }}
         </button>
         <p v-if="error" role="alert" class="message error">{{ error }}</p>

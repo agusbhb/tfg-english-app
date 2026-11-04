@@ -160,6 +160,7 @@ onMounted(load)
       </template>
       <button
         v-else
+        type="submit"
         class="primary-button"
         :disabled="starting || checking || !checked || !selected"
       >
