@@ -37,6 +37,7 @@ function logout() {
       </h1>
       <p>Nos alegra verte. Este es el comienzo de tu camino con el inglés.</p>
       <span class="profile-email">{{ auth.state.user.email }}</span>
+      <p><RouterLink to="/practicar">Practicar inglés</RouterLink></p>
     </template>
     <div v-if="error" class="message error">
       <p role="alert">{{ error }}</p>

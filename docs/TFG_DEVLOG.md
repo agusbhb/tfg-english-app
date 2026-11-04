@@ -926,3 +926,413 @@ Edge, y los tests DOM no miden geometría CSS. La integración real de estos cam
 en GitHub Actions y Sonar sigue pendiente de una publicación y ejecución remota
 por parte del autor. Permanecen sin cubrir el montaje de `main.js` y parte de
 la validación preventiva de nombre/selección académica en Register.
+
+## 2026-11-03 — Segundo incremento: práctica y corrección determinista
+
+### Objetivo e implementación
+
+El alumno autenticado puede elegir un tema de su curso, preparar hasta diez
+preguntas fill_blanks, revisarlas en un modal, entregar incluso respuestas
+vacías y consultar el resultado persistido. No se incorporan LLM, nuevas
+colecciones, dependencias, prompts, historial ni servicios cloud.
+
+Se añaden tres rutas con `current_user`: POST `/tests`, GET `/tests/{test_id}`
+y POST `/tests/{test_id}/respuestas`. Crear un test deriva asignatura y nivel
+del perfil autenticado, valida la pertenencia del tema y consulta el banco con
+las tres referencias. GET y entrega filtran por `_id` y `usuario_id`; un test
+ajeno devuelve el mismo 404 que uno inexistente. Un ID mal formado devuelve 422.
+Los identificadores de ruta se validan como strings hexadecimales y se convierten
+a ObjectId dentro del endpoint: FastAPI no admite directamente el tipo BSON
+arbitrario como parámetro de ruta, aunque los modelos privados sí lo admiten.
+
+### Banco, copia y trazabilidad
+
+`SolvedExample.uso_practica` vale false por defecto: no se asume que un futuro
+ejemplo few-shot sea un ejercicio para alumnos. Los diez ejemplos originales
+del seed se marcan true. Para bancos antiguos, el seed habilita únicamente
+ejemplos con los IDs originales, sin marca previa y preguntas idénticas al
+contenido inicial. No sobrescribe contenido editado ni una exclusión explícita.
+No modifica documentos de Tests; se comprobó con un intento completado no vacío.
+
+Se eligen, en orden del banco, hasta diez preguntas fill_blanks de ejemplos
+habilitados y frases independientes. Se mantiene un único objetivo por intento:
+el del primer ejemplo elegible. No hay aleatorización ni textos compartidos.
+Sin ejercicios elegibles se devuelve 404 con un mensaje específico.
+
+Cada pregunta y solución se copia profundamente a `preguntas_generadas` de Tests.
+Los IDs se reasignan q1...qN para evitar colisiones entre ejemplos. Se guardan
+`origen=banco` y `origenes_preguntas`: ID nuevo, banco, ejemplo e ID original.
+Los nuevos campos tienen defaults compatibles con documentos previos. La copia
+permite corregir aunque se edite o elimine el banco; esto se prueba expresamente.
+La configuración de MongoDB sigue dependiendo de variables de entorno.
+
+### Corrector y privacidad
+
+`practice.grade` es una función sin acceso a MongoDB ni LLM: acepta preguntas
+y respuestas, elimina espacios exteriores en ambos lados y utiliza casefold
+solo si `sensible_mayusculas=false`. Compara con todas las alternativas aceptadas;
+no altera espacios interiores, puntuación ni realiza corrección aproximada.
+Vacío o solo espacios cuenta como incorrecto. Se exige exactamente una respuesta
+por pregunta; omisiones, duplicados, desconocidos y campos como es_correcta
+aportados por el cliente se rechazan con 422.
+
+La persistencia valida el documento completado y realiza un reemplazo atómico
+filtrado por propietario y `estado=pendiente`. Solo una entrega concurrente
+puede completarlo; las demás reciben 409. No necesita transacciones ni un estado
+intermedio en_evaluacion. Se almacenan respuestas originales, aciertos, total
+y fecha de resolución; la puntuación pública es 10 * aciertos / total.
+
+Los esquemas públicos enumeran campos permitidos; no serializan directamente
+los documentos privados. Mientras esté pendiente se devuelven enunciados e IDs,
+sin soluciones; tras completar, se incluyen alternativas aceptadas, respuestas
+y corrección. El corrector no depende del origen, por lo que podrá recibir
+preguntas fill_blanks generadas por IA con el mismo esquema, sin implementar
+esa generación en este incremento.
+
+### Frontend
+
+Bienvenida incorpora Practicar inglés; `/practicar` filtra los temas del catálogo
+por el perfil del alumno. `/tests/:id` carga el intento desde la API, muestra los
+inputs sin required y permite revisar antes de entregar. El diálogo nativo
+muestra recuento, preguntas, respuestas y pendientes; permite volver conservando
+lo escrito o confirmar. No envía nada al abrirlo. Las acciones se deshabilitan
+mientras se entrega. Un fallo de red conserva respuestas y permite reintentar;
+un 409 vuelve a consultar el estado persistido.
+
+El resultado muestra puntuación, aciertos, errores y soluciones por pregunta.
+`auth.authenticated` facilita las nuevas peticiones sin exponer el token en el
+estado ni persistirlo; gestiona 401 y descarta respuestas de sesiones cerradas.
+Los mensajes de práctica distinguen 404/409/422 de errores de registro/login.
+Se mantienen guards y expiración; recargar sigue perdiendo la sesión. No hay
+autoguardado de borradores ni listado histórico. Dentro de una sesión, volver
+desde la selección al test mediante Atrás recupera el resultado con GET.
+
+### Archivos principales
+
+- Backend: main.py, models.py, schemas.py, seed.py y nuevo app/practice.py.
+- Frontend: api.js, auth.js, router.js, styles.css, WelcomeView.vue y nuevas
+  vistas PracticeView.vue y TestView.vue.
+- Pruebas: nuevo backend/tests/test_practice.py, nuevo
+  frontend/tests/practice.test.js y ampliación de frontend/tests/api.test.js.
+
+### Resultados locales reales
+
+| Comprobación | Resultado |
+| --- | --- |
+| Backend | 82 pruebas aprobadas: 65 anteriores y 17 nuevas |
+| Cobertura backend de líneas, sin ramas | 579/605 = 95,70 %, mostrado como 96 % |
+| Ruff y formato | Correctos, 13 archivos Python |
+| Frontend | 48 pruebas aprobadas: 38 anteriores y 10 nuevas |
+| Cobertura frontend de líneas | 98,17 % |
+| Cobertura frontend de ramas | 96,04 % |
+| ESLint, Prettier, build Vite y build Docker | Correctos |
+| Workflow | Actionlint correcto; no se modificó la configuración de CI |
+
+Los nuevos casos cubren privacidad, autenticación, propietario, respuestas
+inválidas/vacías, corrección sensible/insensible a mayúsculas, alternativas,
+persistencia tras eliminar el banco, doble entrega concurrente, opt-in,
+colisiones de IDs y seed repetido con un test completado. Vue prueba selección
+del curso, confirmación/cancelación, respuestas vacías, resultados guardados,
+ausencia de ejercicios, reintento y 401; el cliente HTTP comprueba URL, JSON,
+Bearer y mensajes de práctica.
+
+Se verificó además con Edge real, Nginx, FastAPI y MongoDB temporal aislado:
+selección, modal, cancelación conservando respuesta, entrega de una respuesta
+correcta y nueve vacías, puntuación 1/10 y recuperación del resultado al volver.
+No hubo errores JavaScript ni desbordamiento de resultados a 375, 768 y 1440 px.
+El primer intento de comprobación recargaba la aplicación al abrir la URL del
+test y perdía el JWT en memoria; se corrigió el procedimiento a navegación SPA,
+manteniendo la política de sesión acordada. No se interpreta esto como un fallo
+de persistencia: la prueba de API también verifica el documento en MongoDB.
+
+Los proyectos temporales trainer-increment-tests y trainer-increment-ui se
+retiraron; las cuentas de navegador existieron solo en MongoDB temporal. Las
+capturas/scripts auxiliares permanecen en .tools, excluidos de Git. Se reconstruyó
+la aplicación normal y se ejecutó el seed, preservando datos existentes.
+Compose avisó de contenedores de pruebas antiguos del proyecto principal:
+no se eliminaron contenedores preexistentes ajenos a esta validación.
+
+### Límites, ejecución y revisión manual
+
+Con Docker Desktop activo, en este equipo:
+
+```powershell
+docker compose -f docker-compose.yml -f .tools/compose.ca.yml --profile tools up -d --build --wait
+docker compose exec -T backend python -m app.seed
+```
+
+Sin la CA local, usar Compose sin el segundo archivo. Entrar en localhost:5173,
+iniciar sesión, pulsar Practicar inglés, elegir Present Simple y Empezar test.
+Completar alguna pregunta, abrir Revisar y entregar, comprobar el resumen y
+volver para editar. Confirmar con huecos vacíos, revisar puntuación/soluciones,
+volver a temas y pulsar Atrás para consultar el resultado guardado.
+
+Quedan el aviso conocido de Starlette/TestClient y caminos de error de base
+de datos, startup y CLI sin cubrir. No se ha hecho auditoría completa de
+accesibilidad ni de todos los navegadores. La validación de CI, importación
+XML/LCOV y Quality Gate en Sonar siguen pendientes de publicación y ejecución
+remota. La selección no adapta dificultad ni excluye ejercicios ya realizados.
+
+No se modificaron dependencias, README, configuración Git ni remotos. La rama
+activa encontrada era develop y se mantuvo. No se crearon commits ni se hizo
+staging. La estructura existente de CI y Sonar incluye automáticamente los
+nuevos módulos y pruebas; no se realizaron cambios externos.
+
+## 2026-11-03 — Un test pendiente por usuario y tema
+
+### Regla y diseño
+
+Se permite como máximo un documento con estado pendiente para cada pareja
+usuario_id/tema_id. Otros temas y usuarios son independientes y pueden tener
+sus propios pendientes. Los completados quedan fuera de esta restricción.
+No se añade autoguardado, historial ni integración LLM.
+
+`pending_user_topic_unique` es un índice único compuesto en esos dos campos,
+con `partialFilterExpression={estado: pendiente}`. La comprobación previa en
+POST /tests mejora el mensaje, pero la garantía concurrente depende del índice:
+DuplicateKeyError se traduce a 409 y no genera otro documento.
+
+Antes de crear el índice, la inicialización agrupa pendientes por usuario y
+tema, conserva el más antiguo por fechas.generacion y _id y elimina únicamente
+los duplicados que sigan pendientes. El filtro de eliminación también exige
+estado pendiente para proteger un intento completado durante la migración.
+La operación es idempotente y no cambia ni sobrescribe completados. Si otro
+proceso antiguo crea duplicados durante la instalación del índice, su creación
+fallará y el backend no arrancará sin la restricción; en la primera actualización
+deben detenerse los escritores antiguos. Compose recrea el backend local.
+
+### API y concurrencia
+
+- GET `/tests/pendiente?tema_id=...`: autenticado, valida que el tema pertenece
+  al curso del alumno y devuelve su pendiente usando el DTO público sin
+  soluciones, o null si no existe. Se registra antes de la ruta dinámica por ID.
+- POST `/tests`: devuelve 409 si ya hay pendiente, incluida la carrera entre
+  peticiones que habían superado simultáneamente la comprobación previa.
+- DELETE `/tests/{test_id}`: autenticado y limitado al propietario. El borrado
+  es una única operación condicional por ID, usuario y estado pendiente.
+  Devuelve 200 con descartado=true, 404 para inexistente/ajeno y 409 si el estado
+  ya no permite descartar. Nunca borra por tema de forma indiscriminada.
+- GET `/tests/{test_id}` continúa recuperando la misma copia de preguntas,
+  sin crear documentos ni devolver respuestas parciales de un pendiente.
+
+La entrega existente también utiliza una condición estado=pendiente. Si compite
+con el descarte, o bien se elimina el pendiente, o bien queda completado y el
+descarte falla; un resultado completado no se elimina. CORS incorpora DELETE,
+manteniendo los mismos orígenes locales explícitos.
+
+### Vue
+
+Al cambiar el tema se consulta el pendiente. Mientras no haya respuesta válida,
+se bloquea crear. Si existe se ofrecen Continuar test y Descartar y empezar otro.
+Continuar navega a su ID y la vista existente consulta las mismas preguntas con
+campos vacíos. No se restauran borradores.
+
+Descartar abre un diálogo de confirmación. Cancelar no envía DELETE; confirmar
+elimina el ID concreto y solo después solicita crear otro. Se bloquean acciones
+mientras se procesa. Si otra pestaña crea un pendiente y POST devuelve 409, se
+consulta de nuevo y se ofrece continuar. Los errores al consultar/eliminar se
+muestran y permiten reintentar sin crear a ciegas. Las consultas tardías de un
+tema anterior se ignoran mediante una versión local de selección.
+
+El borrado y la creación son dos peticiones, no una transacción: si se descarta
+correctamente pero falla preparar el nuevo test (red o banco sin ejercicios),
+puede quedar sin pendiente. El usuario puede reintentar crear; el índice sigue
+evitando duplicados. Nunca se sustituye otro pendiente sin nueva confirmación.
+
+### Pruebas y comprobaciones locales
+
+| Comprobación | Resultado |
+| --- | --- |
+| Backend | 87 pruebas aprobadas, cinco nuevas sobre las 82 previas |
+| Cobertura backend, líneas sin ramas | 610/636 = 95,91 %, mostrado como 96 % |
+| Frontend | 55 pruebas aprobadas, siete nuevas sobre las 48 previas |
+| Cobertura frontend de líneas | 97,52 % |
+| Cobertura frontend de ramas | 95,06 % |
+| Ruff y formato Python | Correctos, 13 archivos |
+| ESLint y Prettier | Correctos |
+| Build Vite y Docker | Correctos |
+| Workflow y diff | Actionlint y git diff --check sin errores |
+
+Backend comprueba continuar con el mismo ID sin crear, descarte, protección de
+completados, pendientes en temas distintos, separación por alumno, autenticación,
+IDs inválidos, limpieza de duplicados anteriores e índice parcial. La prueba
+concurrente fuerza cuatro peticiones a llegar a insert_one antes de liberar
+ninguna: una crea y tres reciben 409 por el índice real. Otra prueba enfrenta
+entrega con descarte y comprueba que un completado nunca desaparece. Se adaptó
+el caso anterior de selección de banco para descartar su pendiente entre nuevas
+creaciones, respetando la nueva regla.
+
+Vue comprueba continuar desde cero, cancelación y confirmación del descarte,
+orden DELETE antes de POST, fallos de descarte/consulta, conflicto de otra pestaña,
+cambio rápido de tema y métodos HTTP autenticados. Edge real contra Nginx,
+FastAPI y MongoDB temporal confirmó mismo ID/preguntas, borrador no restaurado,
+cancelación sin borrado, nuevo ID tras descarte y entrega posterior. No hubo
+desbordamiento a 375 px en esa comprobación. Los proyectos temporales de pruebas
+y navegador se retiraron sin tocar la BD de desarrollo.
+
+### Archivos, operación y límites
+
+Backend: app/database.py, app/practice.py, app/main.py y tests/test_practice.py.
+Frontend: src/api.js, src/views/PracticeView.vue, tests/api.test.js y
+tests/practice.test.js. Se actualiza este devlog. No se cambian dependencias,
+colecciones, modelos, README ni configuración remota.
+
+La aplicación normal se reconstruyó para instalar la restricción y servir la
+nueva interfaz. Para probar: iniciar un test, volver a elegir tema, seleccionar
+el mismo y continuar; después volver al tema, cancelar un descarte y finalmente
+confirmarlo. La nueva URL debe tener otro ID. Tras completar el test, seleccionar
+el tema permite crear otro y DELETE del completado debe responder 409.
+
+Continúan pendientes la ejecución remota de CI/Sonar y el aviso conocido de
+Starlette/TestClient. No se promete recuperar respuestas parciales. Se conservó
+develop como rama activa; no se realizaron staging, commits ni operaciones sobre
+historial, ramas o remoto. Los cambios del incremento anterior siguen pendientes
+de versionado y se han preservado.
+
+## 2026-11-04 — Borrador de respuestas guardado únicamente por blur
+
+### Objetivo y modelo
+
+Guardar una respuesta al abandonar su campo y recuperarla al continuar el mismo
+test pendiente. Se reutiliza el documento Tests y su _id, sin nuevas colecciones
+ni creación de intentos durante el guardado. No hay debounce, throttle, intervalos,
+guardado periódico, listeners de salida ni espera forzada al cerrar/navegar.
+
+Se añade `respuestas_borrador`, una lista de DraftAnswer con pregunta_id y
+respuesta_dada, independiente de respuestas_alumno y de su corrección. Su default
+es una lista vacía para leer documentos anteriores sin migración. La validación
+privada comprueba preguntas existentes, IDs no duplicados y ausencia de borrador
+en completados. AnswerInput reutiliza DraftAnswer sin permitir es_correcta ni
+campos adicionales; mantiene el límite de 10 000 caracteres y acepta vacío.
+
+### Endpoint y actualización atómica
+
+PATCH `/tests/{test_id}/borrador` usa current_user, comprueba propietario,
+estado pendiente y pertenencia de pregunta_id. IDs inválidos o respuestas
+inválidas devuelven 422; ajenos/inexistentes, 404; completados, 409. CORS añade
+PATCH sin ampliar los orígenes locales.
+
+La actualización utiliza un pipeline atómico de MongoDB: sobre el array actual,
+filtra únicamente la respuesta del ID indicado y añade su valor nuevo. No
+sustituye el documento ni las demás respuestas y no usa upsert. Los valores se
+envuelven en $literal y los IDs no se interpolan como rutas de campos MongoDB.
+Así se admiten textos que comiencen por '$' y se evitan colisiones con sintaxis
+de operadores. matched_count permite repetir el mismo valor sin devolver un
+error falso por falta de cambios. El endpoint devuelve solo la respuesta guardada.
+
+La condición de escritura repite _id, usuario_id y estado pendiente: un guardado
+que haya leído antes de la entrega no puede recrear el borrador después. GET
+por ID y GET pendiente devuelven el borrador sin soluciones. Al entregar se
+utilizan exclusivamente las respuestas recibidas en la entrega y se elimina
+el campo del documento persistido mediante el reemplazo condicional existente.
+El DTO público de un completado devuelve una lista de borrador vacía.
+
+### Vue y eventos
+
+TestView inicializa campos y referencia de último valor guardado desde el DTO.
+Solo @blur solicita guardar: cargar, escribir, abrir el resumen o navegar por
+código no inicia una petición de guardado. Un clic que abandone el input sí
+puede provocar su blur normal. No hay lógica especial de salida de página.
+
+Cada blur captura el valor exacto, conservando espacios. Las operaciones de la
+misma pregunta se encadenan en una cola de promesas, sin temporizadores; al
+ejecutarse se comparan con el último valor confirmado. Repetir un blur sin
+cambios no envía otra petición. La cola evita invertir el orden de cambios
+rápidos y permite volver al valor anterior mientras había otro guardado en curso.
+Las preguntas distintas pueden guardarse independientemente.
+
+La respuesta del servidor solo actualiza la referencia guardada: nunca reemplaza
+lo que el alumno sigue escribiendo. Un fallo muestra un aviso discreto por
+pregunta, sin deshabilitar el formulario; otro blur puede reintentar. No hay
+reintentos automáticos. Se mantienen las protecciones de sesión y los 401 siguen
+cerrando una sesión inválida. Se ignoran resultados de cargas de otro ID.
+
+La entrega no espera las colas ni combina valores con el borrador: toma siempre
+el contenido actual del formulario. Los trabajos que no han empezado se omiten
+si el test está enviándose o ya no está pendiente; los que estaban en vuelo
+quedan sujetos a la condición de estado en MongoDB. Sus respuestas tardías no
+restauran inputs ni avisos tras mostrar el resultado.
+
+La selección de temas ahora informa de que Continuar recupera las respuestas
+guardadas. Continuar, descartar y completar conservan los endpoints y restricciones
+de pendientes únicos del incremento anterior.
+
+### Pruebas locales realizadas
+
+| Comprobación | Resultado |
+| --- | --- |
+| Backend | 98 casos aprobados: 87 anteriores + 11 nuevos |
+| Cobertura backend de líneas, sin ramas | 631/659 = 95,75 %, mostrado como 96 % |
+| Frontend | 62 casos aprobados: 55 anteriores + 7 nuevos |
+| Cobertura frontend de líneas | 97,47 % |
+| Cobertura frontend de ramas | 92,79 % |
+| Ruff / formato Python | Correctos, 13 archivos |
+| ESLint / Prettier | Correctos |
+| Build Vite / Docker | Correctos |
+| Workflow / diff | Actionlint y git diff --check correctos |
+
+Backend prueba guardar, modificar, vaciar, repetir, leer un documento antiguo,
+recuperar el mismo ID, no crear documentos, conservar otras respuestas concurrentes,
+textos con '$', aislamiento, autenticación, preguntas inválidas y completados.
+La entrega se prueba con respuestas diferentes del borrador y confirma que el
+campo desaparece. Una carrera aleatoria y otra forzada retrasan PATCH hasta
+después de completar el test: el tardío recibe 409 y no modifica el resultado.
+
+Vue comprueba ausencia de guardado por carga/escritura/navegación sin blur,
+repetición de blur sin cambios, guardado de vacío, avisos y reintento, orden por
+pregunta y entrega actual sin esperar un PATCH pendiente. El cliente HTTP
+comprueba PATCH, URL, Bearer y payload de una sola pregunta.
+
+Se ejecutó Edge real sobre Nginx, FastAPI y MongoDB temporal aislado: escribir
+no genera PATCH, abandonar el campo sí; continuar recupera dos respuestas del
+mismo test; un fallo simulado de guardado avisa pero permite entregar un valor
+actual diferente del borrador. Se verifican la corrección de ese valor, borrador
+público vacío tras completar, PATCH posterior rechazado con 409 y ausencia de
+desbordamiento a 375 px. Los proyectos temporales se retiraron sin modificar
+datos de desarrollo; scripts auxiliares quedan en .tools, excluidos de Git.
+
+### Archivos y límites
+
+Backend: app/models.py, app/schemas.py, app/practice.py, app/main.py y
+tests/test_practice.py. Frontend: src/api.js, src/views/TestView.vue,
+src/views/PracticeView.vue, tests/api.test.js y tests/practice.test.js.
+Se actualiza este registro y se reconstruye la aplicación local en puerto 5173.
+No se cambia el seed, la generación de preguntas, dependencias ni README.
+
+Se acepta perder un cambio si se cierra antes de terminar su petición. No hay
+indicador de durabilidad antes de la confirmación HTTP ni bloqueo al salir.
+Si distintas pestañas modifican la misma pregunta, gana la última escritura
+procesada por el servidor; no se introduce edición colaborativa ni versionado.
+La sesión sigue en memoria: recargar requiere login, aunque el borrador permanezca
+en MongoDB. Continúan el aviso conocido de Starlette/TestClient y la validación
+remota pendiente de CI/Sonar. No se hicieron operaciones de staging, historial,
+ramas o configuración Git; se mantuvo develop y el trabajo previo sin versionar.
+
+## 2026-11-04 — Corrección P2: conservar blurs en cola si falla la entrega
+
+Se corrige únicamente la pérdida silenciosa identificada en la mini auditoría.
+TestView sustituye el descarte de trabajos por `sending=true` por una promesa
+que se resuelve al terminar el intento de entrega. La cola de cada pregunta
+espera ese resultado: si el test sigue pendiente, continúa en su orden original;
+si se completó, omite los trabajos restantes. La entrega sigue usando el formulario
+actual y nunca espera las peticiones de borrador.
+
+Los fallos de guardados que estaban en vuelo también esperan el resultado de
+entrega antes de decidir si muestran el aviso existente. Así, si ambas operaciones
+fallan, el aviso no desaparece silenciosamente; si la entrega termina bien, no
+aparece un aviso de borrador sobre un test ya completado. Se mantienen el origen
+exclusivo en blur, la comparación con el último valor confirmado y la secuencia
+por pregunta. No se añaden temporizadores, reintentos automáticos ni guardados
+al navegar. Backend, modelo de datos y protecciones de completados no cambian.
+
+Se añaden cuatro regresiones: entrega fallida con varias versiones en cola
+(la última queda confirmada), entrega exitosa sin nuevos PATCH de la cola y
+dos combinaciones de fallo de autoguardado, en vuelo o en cola, con aviso y
+formulario editable. Las 66 pruebas frontend pasan; ESLint, Prettier, build Vite
+y git diff --check son correctos. Cobertura de líneas frontend: 97,78 %;
+de ramas: 93,03 %. No se repite la suite backend porque no se modifica su código;
+sus 98 pruebas aprobadas corresponden a la ejecución del incremento anterior.
+
+Archivos de esta corrección: frontend/src/views/TestView.vue,
+frontend/tests/practice.test.js y este registro. No se modifica README,
+dependencias, configuración remota ni Git. CI/Sonar remotos siguen pendientes.

@@ -219,6 +219,7 @@ def validate_activity(
 
 
 class SolvedExample(Model):
+    uso_practica: bool = False
     ejemplo_id: MongoId
     objetivo: Objective
     presentacion: Presentation
@@ -243,6 +244,11 @@ class ExerciseBankDocument(Document):
         if len(ids) != len(set(ids)):
             raise ValueError("Los IDs de ejemplo deben ser únicos")
         return self
+
+
+class DraftAnswer(Model):
+    pregunta_id: LocalId
+    respuesta_dada: str = Field(max_length=10000)
 
 
 class StudentAnswer(Model):
@@ -273,7 +279,16 @@ class AIModel(Model):
     modelo: NonEmpty
 
 
+class QuestionOrigin(Model):
+    pregunta_id: LocalId
+    banco_id: MongoId
+    ejemplo_id: MongoId
+    pregunta_original_id: LocalId
+
+
 class TestDocument(Document):
+    origen: Literal["banco", "ia"] | None = None
+    origenes_preguntas: list[QuestionOrigin] = Field(default_factory=list, max_length=50)
     usuario_id: MongoId
     asignatura_id: MongoId
     nivel_id: MongoId
@@ -291,6 +306,7 @@ class TestDocument(Document):
     modelo_evaluacion: AIModel | None = None
     preguntas_generadas: list[Question] = Field(min_length=1, max_length=50)
     respuestas_alumno: list[StudentAnswer] = Field(default_factory=list, max_length=50)
+    respuestas_borrador: list[DraftAnswer] = Field(default_factory=list, max_length=50)
     feedback_ia: str | None = None
     etiquetas_error: list[str] = Field(default_factory=list)
     estadisticas: Statistics | None = None
@@ -306,6 +322,11 @@ class TestDocument(Document):
             if (reference is None) != (version is None):
                 raise ValueError("La referencia al prompt requiere su versión y viceversa")
         question_ids = {question.pregunta_id for question in self.preguntas_generadas}
+        draft_ids = [answer.pregunta_id for answer in self.respuestas_borrador]
+        if len(draft_ids) != len(set(draft_ids)) or not set(draft_ids) <= question_ids:
+            raise ValueError("El borrador debe referirse a preguntas existentes sin duplicados")
+        if self.estado == "completado" and self.respuestas_borrador:
+            raise ValueError("Un test completado no conserva borrador")
         answer_ids = [answer.pregunta_id for answer in self.respuestas_alumno]
         if len(answer_ids) != len(set(answer_ids)) or not set(answer_ids) <= question_ids:
             raise ValueError("Las respuestas deben referirse a preguntas existentes sin duplicados")

@@ -62,6 +62,7 @@ def initial_documents() -> tuple[SubjectDocument, ExerciseBankDocument, list[Pro
         examples.append(
             {
                 "ejemplo_id": ObjectId(f"7100000000000000{index:08x}"),
+                "uso_practica": True,
                 "objetivo": "gramatica",
                 "presentacion": "frases_independientes",
                 "texto_base": None,
@@ -127,6 +128,22 @@ async def seed_database(database: AsyncDatabase) -> None:
     await database.BancoEjercicios.update_one(
         {"tema_id": bank.tema_id}, {"$setOnInsert": bank.model_dump(by_alias=True)}, upsert=True
     )
+    # Migración acotada: habilita solo los ejemplos originales sin marca previa,
+    # si su contenido sigue coincidiendo. No modifica preguntas ni Tests.
+    for example in bank.ejemplos_resueltos:
+        await database.BancoEjercicios.update_one(
+            {
+                "_id": bank.id,
+                "ejemplos_resueltos": {
+                    "$elemMatch": {
+                        "ejemplo_id": example.ejemplo_id,
+                        "uso_practica": {"$exists": False},
+                        "preguntas": [q.model_dump() for q in example.preguntas],
+                    }
+                },
+            },
+            {"$set": {"ejemplos_resueltos.$.uso_practica": True}},
+        )
     for prompt in prompts:
         await database.Prompts.update_one(
             {
