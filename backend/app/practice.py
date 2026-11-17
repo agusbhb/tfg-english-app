@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
+from app.bank_contracts import BankMetadataDocument, BankQuestionDocument
 from app.models import (
     BlankQuestion,
-    ExerciseBankDocument,
     StudentAnswer,
     SubjectDocument,
     TestDocument,
@@ -82,11 +82,13 @@ async def validate_topic(database, user, topic_id):
     try:
         if subject is None:
             raise ValueError("Asignatura inexistente")
-        validate_academic_reference(
-            SubjectDocument.model_validate(subject), profile.nivel_id, topic_id
-        )
+        catalog = SubjectDocument.model_validate(subject)
+        validate_academic_reference(catalog, profile.nivel_id, topic_id)
     except ValueError:
         raise HTTPException(422, "El tema no pertenece a tu curso") from None
+    for level in catalog.niveles:
+        if level.nivel_id == profile.nivel_id:
+            return next(topic for topic in level.temas if topic.tema_id == topic_id)
 
 
 async def pending_test(database, user, topic_id):
@@ -101,34 +103,46 @@ async def create_test(database, user, topic_id):
     if await pending_test(database, user, topic_id):
         raise HTTPException(409, "Ya tienes un test pendiente para este tema")
     profile = user.perfil_academico
-    document = await database.BancoEjercicios.find_one(
-        {"asignatura_id": profile.asignatura_id, "nivel_id": profile.nivel_id, "tema_id": topic_id}
+    topic = await validate_topic(database, user, topic_id)
+    document = await database.Bancos.find_one(
+        {"tema_id": topic_id, "nivel_mcer_objetivo": topic.nivel_mcer_objetivo}
     )
     if document is None:
         raise HTTPException(404, "No hay ejercicios disponibles para este tema")
-    bank = ExerciseBankDocument.model_validate(document)
+    bank = BankMetadataDocument.model_validate(document)
     questions, origins = [], []
-    objective = None
-    for example in bank.ejemplos_resueltos:
-        if not example.uso_practica or example.presentacion != "frases_independientes":
-            continue
-        for question in example.preguntas:
-            if not isinstance(question, BlankQuestion) or len(questions) == 10:
-                continue
-            if objective is None:
-                objective = example.objetivo
-            if example.objetivo != objective:
-                continue
-            identifier = f"q{len(questions) + 1}"
-            questions.append(question.model_copy(update={"pregunta_id": identifier}, deep=True))
-            origins.append(
-                {
-                    "pregunta_id": identifier,
-                    "banco_id": bank.id,
-                    "ejemplo_id": example.ejemplo_id,
-                    "pregunta_original_id": question.pregunta_id,
-                }
+    documents = (
+        await database.BancoEjercicios.find(
+            {
+                "banco_id": bank.id,
+                "secuencia": {"$lte": bank.publicado_hasta},
+                "validacion.pedagogica": "revisada",
+            }
+        )
+        .sort("secuencia", 1)
+        .limit(10)
+        .to_list()
+    )
+    for document in documents:
+        question = BankQuestionDocument.model_validate(document)
+        identifier = str(question.id)
+        questions.append(
+            BlankQuestion(
+                pregunta_id=identifier,
+                formato="fill_blanks",
+                enunciado=question.enunciado,
+                solucion=question.solucion.model_dump(),
             )
+        )
+        origins.append(
+            {
+                "pregunta_id": identifier,
+                "banco_id": bank.id,
+                "pregunta_banco_id": question.id,
+                "version_pregunta": question.version,
+                "secuencia": question.secuencia,
+            }
+        )
     if not questions:
         raise HTTPException(404, "No hay ejercicios disponibles para este tema")
     test = TestDocument(
@@ -136,7 +150,8 @@ async def create_test(database, user, topic_id):
         asignatura_id=profile.asignatura_id,
         nivel_id=profile.nivel_id,
         tema_id=topic_id,
-        objetivo=objective,
+        objetivo="gramatica",
+        nivel_mcer=bank.nivel_mcer_objetivo,
         presentacion="frases_independientes",
         origen="banco",
         origenes_preguntas=origins,

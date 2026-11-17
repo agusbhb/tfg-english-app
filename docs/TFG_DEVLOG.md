@@ -1336,3 +1336,282 @@ sus 98 pruebas aprobadas corresponden a la ejecución del incremento anterior.
 Archivos de esta corrección: frontend/src/views/TestView.vue,
 frontend/tests/practice.test.js y este registro. No se modifica README,
 dependencias, configuración remota ni Git. CI/Sonar remotos siguen pendientes.
+
+## 2026-11-05 — Incremento 3, fase 1: contratos, ficha educativa y prompt de banco
+
+### Objetivo y límites
+
+Preparar contratos para preguntas compartidas, metadatos de banco, progreso,
+trazabilidad y métricas de generación sin conectar esos contratos al motor del
+segundo incremento. No se crean colecciones nuevas, migraciones, índices,
+reservas, estados preparados, tests mixtos, servicios worker ni llamadas LLM.
+No se cambia Docker, dependencias, endpoints, registro, perfil o vistas Vue.
+
+### Reutilización de Prompts
+
+Se conserva PromptDocument, la colección Prompts y su índice compuesto de
+asignatura/nombre/tipo/versión. El seed mantiene los dos borradores inactivos y
+añade generacion_banco, tipo generacion, versión 1, como única plantilla
+operativa en una instalación limpia. Su texto completo está en
+backend/seed_data/prompts/generacion_banco.v1.txt, exclusivamente como recurso
+de instalación del seed. No es un segundo almacén consultado por la lógica
+de generación: app/prompts.py recupera el documento de MongoDB y no dispone
+de una plantilla alternativa ni fallback al archivo.
+
+Se usa $setOnInsert: las ediciones y desactivaciones previas se conservan.
+Si ya hay otra plantilla activa de generación, la nueva se inserta inactiva;
+no se desactiva automáticamente una elección previa. La lectura exige una
+única plantilla de generación activa por asignatura y que corresponda a la
+familia esperada. Ausencia, ambigüedad, familia distinta o variables inválidas
+producen error; no se elige arbitrariamente la versión de mayor número.
+
+La activación no llama al LLM y ninguna ruta actual consume el nuevo prompt.
+No se ejecutó el seed contra la base de desarrollo: se probó exclusivamente
+en MongoDB temporal. El documento se incorporará al ejecutar posteriormente
+el seed actualizado en el entorno que corresponda.
+
+El prompt exige una cantidad exacta de preguntas base, un hueco ___, respuesta
+principal incluida en las aceptadas, dos distractores incorrectos, diversidad,
+adecuación pedagógica y contenido apropiado para menores. Define JSON estricto,
+límites de campos y prohibición de inventar IDs, secuencias, propietarios,
+validación, métricas u otros metadatos que asignará el backend. El ejemplo JSON
+incluido también se valida contra el contrato real en las pruebas.
+
+La composición utiliza cuatro variables declaradas: tema, nivel_mcer, cantidad
+y ficha_educativa. Se rechazan atributos, índices, conversiones y formatos en
+placeholders. Solo se interpola una vez, sin reinterpretar llaves contenidas
+en la ficha. La asignatura de consulta se valida como ObjectId.
+
+### Contenido y contratos
+
+Se añade la ficha content/ingles/present-simple/A1/v1.md dentro del backend:
+afirmativa de verbos léxicos, hábitos/rutinas, concordancia, -s/-es/-ies y have/has;
+objetivos, ejemplos, errores frecuentes, exclusiones y criterios de distractores.
+A1 representa dificultad objetivo, no una equivalencia con 1.º ESO ni un nivel
+diagnosticado del alumno. La selección de curso al registrarse se conserva.
+
+app/content.py carga únicamente fichas de un registro explícito del servidor.
+No acepta rutas proporcionadas por clientes ni sustituye niveles/versiones
+desconocidos por otros. Incluye referencia de versión y SHA-256, validado contra
+el texto. read_text normaliza finales de línea para obtener el mismo hash en
+Windows y Linux. Las fichas están separadas de la plantilla de generación.
+
+app/bank_contracts.py reutiliza Model/Document, ObjectId BSON, MCER, fechas UTC,
+BlankSolution, Question y AIModel. Define:
+
+- Banco y edición, ficha correspondiente y último registro de generación.
+- Asignación curricular explícita de asignatura/curso/tema a banco, sin activarla.
+- Pregunta base individual, respuesta principal, alternativas y distractores.
+- Salida LLM acotada que rechaza campos adicionales y enunciados repetidos.
+- Validación estructural separada de revisión pedagógica. Marcar una pregunta
+  apta para opción múltiple exige dos distractores y revisión pedagógica.
+- Procedencia manual/LLM; el origen LLM requiere modelo, prompt/version,
+  referencia de ficha y ID de generación asignado por el backend.
+- Cursor independiente por usuario/banco, con versión y contador no negativo.
+- Snapshot privado con ID original, banco, secuencia y versión de pregunta.
+  Se admiten contratos de ambas modalidades, sin activar su creación o corrección.
+- Métricas por intento: modelo, prompt/version, ficha, latencia, tokens de entrada
+  y salida, coste estimado USD, preguntas solicitadas/recibidas/válidas y errores
+  estructurados. Datos desconocidos son null; no se presentan como coste cero.
+
+Los contadores son enteros estrictos; se rechazan costes negativos/no finitos.
+Un intento puede registrar más preguntas recibidas que solicitadas, ya que esa
+respuesta incorrecta también debe poder medirse; válidas no supera recibidas.
+Los metadatos se serializan a BSON y las respuestas generadas no los controlan.
+No se calcula ni estima automáticamente el coste sin proveedor/tarifas definidos.
+
+### Pruebas y comprobaciones locales
+
+| Comprobación | Resultado |
+| --- | --- |
+| Suite backend completa con MongoDB aislado | 163 aprobadas: 98 previas + 65 nuevas |
+| Nuevas pruebas de contratos | 35 casos |
+| Nuevas pruebas de ficha/plantilla | 25 unitarias + 5 de integración |
+| Cobertura backend de líneas, sin ramas | 848/876 = 96,80 %, mostrado como 97 % |
+| Nuevos módulos bank_contracts/content/prompts | 100 % de líneas, no prueba de corrección pedagógica |
+| Ruff / formato | Correctos, 19 archivos Python |
+
+Se comprueban preguntas malformadas, límites, normalización de alternativas,
+distractores repetidos o aceptados, metadatos LLM prohibidos, procedencia,
+snapshots de ambas modalidades, cursores, métricas, hashes, rutas, composición
+y cantidad de salida. MongoDB real prueba lectura del texto editado en BD,
+ausencia de fallback, conservación de ediciones/desactivaciones, conflictos de
+activación y seed concurrente de la misma versión. La suite previa conserva
+las comprobaciones de autorización, privacidad, autoguardado y corrección.
+
+Se utilizó el proyecto temporal trainer-phase1-tests y el override local de CA,
+sin cambios en archivos Docker ni datos reales. No se repiten tests/lint/build
+frontend porque no se modificó frontend. Sigue el aviso conocido de
+Starlette/TestClient sobre httpx. CI/Sonar de estos cambios requieren una nueva
+ejecución remota; no se ha publicado ni cambiado configuración externa.
+
+### Riesgos y decisiones para la fase 2
+
+Los contratos no validan relaciones contra MongoDB ni crean índices; esas
+garantías requieren servicios, migración y pruebas de integración posteriores.
+No existe aún asignación operativa curso/tema/banco ni equivalencia MCER global.
+La validación estructural no demuestra corrección gramatical o de distractores:
+la política de revisión y publicación continúa pendiente.
+
+Sin modificar índices ni introducir transacciones, no se garantiza una única
+activación frente a escrituras administrativas o seeds de versiones diferentes
+que compitan. Se conserva la seguridad de lectura: cualquier ambigüedad bloquea
+su utilización. El seed concurrente de la misma versión sí utiliza el índice
+compuesto existente. La estrategia futura de activación debe decidirse antes
+de habilitar generación real. También quedan pendientes proveedor, presupuestos,
+leases, persistencia histórica de métricas y replica set/reservas atómicas.
+
+### Archivos e impacto en la memoria
+
+Nuevos: app/bank_contracts.py, app/content.py, app/prompts.py, ficha Markdown,
+recurso del seed y tests/test_bank_contracts.py y tests/test_prompts.py.
+Modificados: app/seed.py, tests/test_models.py, tests/test_auth.py y este registro.
+Los tests existentes solo ajustan la expectativa de dos a tres prompts.
+No se modifica README ni se realizan operaciones Git de escritura. La edición
+previa de .gitignore se conserva sin cambios. Esta fase permite explicar la
+separación contenido/plantilla, contratos independientes del proveedor,
+trazabilidad reproducible y evolución compatible del motor determinista.
+
+## 2026-11-14 — Fase 1: idioma objetivo en generacion_banco v2
+
+Se añade idioma_objetivo al contrato interno GenerationParameters con valor
+predeterminado y único admitido Inglés, reutilizando la etiqueta de la asignatura
+del seed. El campo queda disponible para una resolución futura desde asignatura
+o banco. Los contratos públicos y las vistas conservan su comportamiento.
+
+La nueva plantilla generacion_banco.v2.txt utiliza la variable para enunciados,
+respuesta principal, alternativas y distractores. Conserva las restricciones y
+el esquema JSON de v1. La plantilla v1 y sus metadatos originales se mantienen.
+El renderizador valida las cuatro variables de v1 y las cinco de v2 según la
+versión; rechaza combinaciones incompatibles y versiones todavía no soportadas.
+
+El seed prepara v2 por defecto con ID y fecha propios. $setOnInsert conserva
+texto, variables y estado de cualquier documento existente. Si v1 está activa,
+v2 se inserta inactiva; si v1 está inactiva y no hay otra generación activa,
+v2 puede insertarse activa. Una instalación limpia recibe v2 y los dos borradores.
+
+Para activar v2 en una base con v1 activa, validar primero el documento v2 y
+realizar mantenimiento con lectores/escritores de generación detenidos.
+Desactivar las plantillas de generación activas de la asignatura, activar
+únicamente generacion_banco versión 2 y comprobar que el total activo sea uno
+y que load_generation_prompt recupere v2. Durante el intervalo sin plantilla
+activa, el cargador rechaza la lectura. Repetir el seed mantiene la elección.
+Este procedimiento requiere exclusión de otros administradores; la unicidad
+de activación sigue siendo una validación de lectura, sin un nuevo índice.
+
+Validación local: 172 pruebas backend aprobadas, nueve adicionales a las 163
+anteriores. Incluyen idioma inglés, sustitución del marcador, v1/v2, variables
+por versión, exclusión del idioma de CreateTestRequest, seed repetido con v1
+activa/inactiva y activación controlada de v2. Cobertura de líneas sin ramas
+857/885 = 96,84 %. Ruff y formato correctos en 19 archivos. Continúa el aviso
+conocido de Starlette/TestClient. MongoDB fue efímero en trainer-language-tests;
+no se ejecutó el seed ni la activación en desarrollo y no hubo llamadas LLM.
+
+Archivos del ajuste: app/prompts.py, app/seed.py, recurso generacion_banco.v2.txt,
+tests/test_prompts.py, tests/test_models.py y los dos documentos de seguimiento.
+La fase 2 continúa pendiente. El ajuste documenta la separación entre idioma
+objetivo resuelto por backend y variables versionadas de la plantilla.
+
+## 2026-11-16 — Fase 2B: persistencia nueva y ensayo de restauración
+
+### Alcance autorizado y decisiones
+
+El desarrollador confirma que la base anterior solo contiene datos de prueba
+y autoriza omitir su migración. Se implementa en bases aisladas un banco por
+tema curricular y dificultad MCER, sin ediciones del banco. ADR-009 y ADR-010
+registran el alcance aplicado y sustituyen para el MVP las propuestas ADR-002
+y ADR-008, conservando su historial. Replica set y reserva secuencial siguen
+pendientes; se mantiene la topología standalone existente.
+
+### Modelo y flujo implementados
+
+Bancos se añade a las cinco colecciones anteriores. Su clave única es
+(tema_id, nivel_mcer_objetivo). El contrato conserva código de contenido,
+referencia de ficha/version/hash, publicado_hasta y última métrica opcional.
+BancoEjercicios contiene diez documentos individuales del seed, con banco_id,
+secuencia única por banco, versión de pregunta, enunciado, principal, solución,
+procedencia manual y validación. Las preguntas iniciales no reciben distractores
+inventados; aún no se presentan como opción múltiple.
+
+El tema Present Simple declara A1 como dificultad objetivo explícita de ese
+contenido. El backend valida el tema contra asignatura y curso del perfil y
+selecciona exclusivamente su banco MCER configurado. No se introduce una
+equivalencia global curso/MCER ni se evalúa el nivel individual del alumno.
+La práctica usa las primeras hasta diez preguntas revisadas y publicadas,
+ordenadas por secuencia. No hay consumo ni cursor operativo; puede haber
+repetición entre intentos, como antes de la fase 3.
+
+Cada intento copia enunciados y soluciones con ID global de pregunta; su
+procedencia conserva banco, ID original, secuencia y versión. QuestionOrigin
+anterior y BankQuestionOrigin nuevo conviven en el lector de Tests. Se prueba
+recuperar un snapshot anterior con borrador y completarlo tras retirar el banco.
+Se conservan autorización por propietario, privacidad y transiciones atómicas
+de pendientes, entregas y descartes. La API mantiene el flujo actual de Vue.
+
+El seed inserta preguntas con IDs estables y $setOnInsert antes de publicar el
+banco. Repetirlo conserva documentos editados e índices y permite recuperar una
+instalación inicial parcial. Una base nueva persiste generacion_banco v2 activa,
+las cinco variables y el texto completo; el test consulta el documento real.
+Se mantiene la conservación de v1 activa si ya existe. Una base con el array
+antiguo o su índice tema_unique se rechaza antes de escribir. No se ejecuta
+un borrado, una migración implícita ni un drop de índices contra esa base.
+
+### Copia y restauración ejecutadas
+
+scripts/Test-BackupRestore.ps1 crea un proyecto Compose con nombre único, red y
+tmpfs propios usando compose.test.yml. backend/scripts/backup_restore_check.py
+prepara mediante FastAPI un usuario aleatorio de ensayo, un test completado y
+otro pendiente con borrador. Los nombres de base y el entorno se validan como
+exclusivos de prueba. No se consulta MONGODB_URI de desarrollo.
+
+Se ejecutaron mongodump con archive/gzip y mongorestore con remapeo de namespace
+a una segunda base vacía. Resultado real: 18 documentos restaurados de seis
+colecciones y cero fallos. Antes del lifespan de destino se compararon todos
+los documentos e índices con el origen, para no confundir restauración con
+recreación posterior de índices por la aplicación. Después se validaron login,
+perfil, consulta de ambos tests y entrega del pendiente en la base restaurada.
+El origen se volvió a comparar y permaneció idéntico.
+
+Los artefactos privados se conservan en .tools/backup-2bceb32df6fc40d590059907475e60b3,
+fuera de Git, con archivo comprimido y estado de verificación. El SHA-256 se
+calculó durante el ensayo. Los contenedores/red de ese ensayo se retiraron.
+La base de desarrollo quedó intacta; no se arrancó el nuevo backend contra ella.
+COPIA_RESTAURACION.md contiene el procedimiento, comandos, límites del dump
+lógico y cómo ensayar futuras migraciones y rollback sobre clones.
+
+### Comprobaciones locales efectivas
+
+| Comprobación | Resultado |
+| --- | --- |
+| Backend completo, MongoDB aislado | 178 casos aprobados |
+| Cobertura de backend/app, sin ramas | 865/892 = 96,97 % |
+| Ruff y formato Python | Correctos, 21 archivos, incluido el verificador de restauración |
+| Frontend | 66 casos aprobados |
+| Cobertura frontend | 97,78 % de líneas, 93,03 % de ramas |
+| ESLint, Prettier y build Vite | Correctos |
+| Backup y restauración reales | Documentos e índices idénticos; flujo FastAPI operativo |
+
+Se adaptaron pruebas del antiguo array al formato individual. Se conserva el
+test del modelo legacy para compatibilidad de lectura; la antigua migración
+automática de uso_practica se retira al quedar fuera del alcance autorizado.
+La suite incluye índices únicos, seed nuevo/repetido/parcial, dificultad exacta,
+rechazo sin escrituras de una base vieja con datos o solo con índice antiguo,
+privacidad, respuestas y concurrencia. Los siete casos de test_persistence.py
+complementan las suites previas. El script de backup se ejecuta como ensayo
+separado y no entra en el porcentaje de backend/app.
+
+### Archivos y límites
+
+Backend: bank_contracts.py, models.py, database.py, seed.py y practice.py.
+Pruebas: test_models.py, test_auth.py, test_bank_contracts.py, test_practice.py
+y nuevo test_persistence.py. Nuevos scripts de ensayo Python y PowerShell.
+Documentación: este registro, seguimiento, ADR y COPIA_RESTAURACION.md, con su
+excepción en .gitignore. Se mantiene el README y las configuraciones Docker/CI.
+
+La adopción en desarrollo requiere posteriormente una base/instancia nueva con
+sus permisos, o una migración aprobada, antes de arrancar el código nuevo. Cambiar
+solo MONGODB_DB sobre un volumen existente no provisiona permisos automáticamente.
+Los servicios actuales solo crean índices y colecciones al arrancar; el contenido
+inicial se carga mediante el comando explícito de seed descrito en el procedimiento.
+Continúa el aviso conocido de Starlette/TestClient. No se ha ejecutado CI/Sonar
+en remoto ni se han realizado operaciones Git de escritura.

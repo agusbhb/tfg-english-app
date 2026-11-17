@@ -16,6 +16,11 @@ frontend/dist/
 frontend/coverage/
 docs/*
 !docs/TFG_DEVLOG.md
+!docs/COPIA_RESTAURACION.md
 AGENTS.md
 .idea/
 docker-tests.log
+SECURITY_BACKLOG.md
+TFG_IDEAS.md
+TFG_INCREMENTO_3.md
+TFG_INCREMENTO_4.md

@@ -20,10 +20,14 @@ def practice(api, registration):
         "/auth/login", json={k: registration[k] for k in ("email", "password")}
     ).json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
-    topic = str(db.BancoEjercicios.find_one()["tema_id"])
+    topic = str(db.Bancos.find_one()["tema_id"])
     response = client.post("/tests", json={"tema_id": topic}, headers=headers)
     assert response.status_code == 201
     return client, db, headers, response.json(), topic
+
+
+def qid(test, index=0):
+    return test["preguntas"][index]["pregunta_id"]
 
 
 def payload(test, answer=""):
@@ -131,43 +135,25 @@ def test_authentication_and_isolation(practice, registration):
     assert client.get(f"/tests/{ObjectId()}", headers=headers).status_code == 404
 
 
-def test_topic_and_opt_in_selection(practice):
+def test_topic_and_reviewed_selection(practice):
     client, db, headers, original, topic = practice
-    assert client.delete(f"/tests/{original['id']}", headers=headers).status_code == 200
+    client.delete(f"/tests/{original['id']}", headers=headers)
     assert (
         client.post("/tests", json={"tema_id": str(ObjectId())}, headers=headers).status_code == 422
     )
-    bank = db.BancoEjercicios.find_one()
-    # Identical local IDs in different examples are remapped within the test.
-    for example in bank["ejemplos_resueltos"]:
-        example["preguntas"][0]["pregunta_id"] = "same-local-id"
-        example["uso_practica"] = False
-    bank["ejemplos_resueltos"][0]["uso_practica"] = True
-    bank["ejemplos_resueltos"][1]["uso_practica"] = True
-    db.BancoEjercicios.replace_one({"_id": bank["_id"]}, bank)
+    db.BancoEjercicios.update_many(
+        {"secuencia": {"$gt": 2}}, {"$set": {"validacion.pedagogica": "pendiente"}}
+    )
     test = client.post("/tests", json={"tema_id": topic}, headers=headers).json()
     assert len(test["preguntas"]) == 2
-    assert len({q["pregunta_id"] for q in test["preguntas"]}) == 2
-    assert client.delete(f"/tests/{test['id']}", headers=headers).status_code == 200
-    db.BancoEjercicios.update_one({}, {"$set": {"ejemplos_resueltos.$[].uso_practica": False}})
+    assert test["preguntas"][0]["pregunta_id"] == str(
+        db.BancoEjercicios.find_one({"secuencia": 1})["_id"]
+    )
+    client.delete(f"/tests/{test['id']}", headers=headers)
+    db.BancoEjercicios.update_many({}, {"$set": {"validacion.pedagogica": "rechazada"}})
     assert client.post("/tests", json={"tema_id": topic}, headers=headers).status_code == 404
-    db.BancoEjercicios.delete_many({})
+    db.Bancos.delete_many({})
     assert client.post("/tests", json={"tema_id": topic}, headers=headers).status_code == 404
-
-
-def test_legacy_seed_enables_only_unchanged_originals(practice):
-    client, db, _, _, _ = practice
-    bank = db.BancoEjercicios.find_one()
-    for example in bank["ejemplos_resueltos"]:
-        example.pop("uso_practica")
-    bank["ejemplos_resueltos"][0]["preguntas"][0]["enunciado"] = "Contenido editado"
-    bank["ejemplos_resueltos"][1]["uso_practica"] = False
-    db.BancoEjercicios.replace_one({"_id": bank["_id"]}, bank)
-    client.portal.call(seed_database, client.app.state.database)
-    examples = db.BancoEjercicios.find_one()["ejemplos_resueltos"]
-    assert "uso_practica" not in examples[0]
-    assert examples[1]["uso_practica"] is False
-    assert all(e["uso_practica"] for e in examples[2:])
 
 
 @pytest.mark.parametrize(
@@ -240,13 +226,25 @@ def test_pending_creation_concurrency_and_other_topics(practice, monkeypatch):
     assert sorted(r.status_code for r in responses) == [201, 409, 409, 409]
     assert db.Tests.count_documents({"estado": "pendiente"}) == 1
     other_topic = ObjectId()
-    bank = db.BancoEjercicios.find_one()
+    subject = db.Asignaturas.find_one()
+    bank = db.Bancos.find_one()
     db.Asignaturas.update_one(
-        {"_id": bank["asignatura_id"]},
-        {"$push": {"niveles.0.temas": {"tema_id": other_topic, "nombre": "Otro tema"}}},
+        {"_id": subject["_id"]},
+        {
+            "$push": {
+                "niveles.0.temas": {
+                    "tema_id": other_topic,
+                    "nombre": "Otro tema",
+                    "nivel_mcer_objetivo": "A1",
+                }
+            }
+        },
     )
     bank.update(_id=ObjectId(), tema_id=other_topic)
-    db.BancoEjercicios.insert_one(bank)
+    db.Bancos.insert_one(bank)
+    question = db.BancoEjercicios.find_one()
+    question.update(_id=ObjectId(), banco_id=bank["_id"])
+    db.BancoEjercicios.insert_one(question)
     assert (
         client.post("/tests", json={"tema_id": str(other_topic)}, headers=headers).status_code
         == 201
@@ -329,17 +327,22 @@ def test_draft_updates_and_recovery_without_solutions(practice):
     # Compatibilidad con intentos anteriores sin el campo.
     db.Tests.update_one({"_id": ObjectId(test["id"])}, {"$unset": {"respuestas_borrador": ""}})
     assert client.get(f"/tests/{test['id']}", headers=headers).json()["respuestas_borrador"] == []
-    for question, answer in [("q1", " play "), ("q2", "$literal"), ("q1", "modified"), ("q1", "")]:
+    for question, answer in [
+        (qid(test), " play "),
+        (qid(test, 1), "$literal"),
+        (qid(test), "modified"),
+        (qid(test), ""),
+    ]:
         response = client.patch(
             url, json={"pregunta_id": question, "respuesta_dada": answer}, headers=headers
         )
         assert response.status_code == 200 and response.json()["respuesta_dada"] == answer
-    client.patch(url, json={"pregunta_id": "q1", "respuesta_dada": ""}, headers=headers)
+    client.patch(url, json={"pregunta_id": qid(test), "respuesta_dada": ""}, headers=headers)
     loaded = client.get("/tests/pendiente", params={"tema_id": topic}, headers=headers).json()
     assert loaded["id"] == test["id"]
     assert {a["pregunta_id"]: a["respuesta_dada"] for a in loaded["respuestas_borrador"]} == {
-        "q1": "",
-        "q2": "$literal",
+        qid(test): "",
+        qid(test, 1): "$literal",
     }
     assert "solucion" not in str(loaded) and loaded["resultados"] is None
     assert db.Tests.count_documents({}) == 1
@@ -357,9 +360,12 @@ def test_parallel_drafts_do_not_overwrite_other_questions(practice):
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        responses = list(pool.map(save, ["q1", "q2"]))
+        responses = list(pool.map(save, [qid(test), qid(test, 1)]))
     assert all(r.status_code == 200 for r in responses)
-    assert {a["pregunta_id"] for a in db.Tests.find_one()["respuestas_borrador"]} == {"q1", "q2"}
+    assert {a["pregunta_id"] for a in db.Tests.find_one()["respuestas_borrador"]} == {
+        qid(test),
+        qid(test, 1),
+    }
 
 
 @pytest.mark.parametrize(
@@ -384,7 +390,7 @@ def test_invalid_draft(practice, body):
 def test_draft_auth_and_owner(practice, registration):
     client, db, headers, test, _ = practice
     url = f"/tests/{test['id']}/borrador"
-    body = {"pregunta_id": "q1", "respuesta_dada": "play"}
+    body = {"pregunta_id": qid(test), "respuesta_dada": "play"}
     for auth in ({}, {"Authorization": "Bearer invalid"}):
         assert client.patch(url, json=body, headers=auth).status_code == 401
     registration["email"] = "draft-other@example.com"
@@ -406,7 +412,7 @@ def test_draft_auth_and_owner(practice, registration):
 def test_submission_uses_current_answers_and_removes_draft(practice):
     client, db, headers, test, _ = practice
     url = f"/tests/{test['id']}/borrador"
-    client.patch(url, json={"pregunta_id": "q1", "respuesta_dada": "play"}, headers=headers)
+    client.patch(url, json={"pregunta_id": qid(test), "respuesta_dada": "play"}, headers=headers)
     result = client.post(f"/tests/{test['id']}/respuestas", json=payload(test), headers=headers)
     assert result.status_code == 200 and result.json()["aciertos"] == 0
     assert result.json()["respuestas_borrador"] == []
@@ -414,7 +420,7 @@ def test_submission_uses_current_answers_and_removes_draft(practice):
     assert "respuestas_borrador" not in completed
     assert (
         client.patch(
-            url, json={"pregunta_id": "q1", "respuesta_dada": "play"}, headers=headers
+            url, json={"pregunta_id": qid(test), "respuesta_dada": "play"}, headers=headers
         ).status_code
         == 409
     )
@@ -439,7 +445,7 @@ def test_late_draft_after_submission_cannot_recreate_field(practice, monkeypatch
         future = pool.submit(
             client.patch,
             f"/tests/{test['id']}/borrador",
-            json={"pregunta_id": "q1", "respuesta_dada": "play"},
+            json={"pregunta_id": qid(test), "respuesta_dada": "play"},
             headers=headers,
         )
         try:
@@ -463,7 +469,7 @@ def test_draft_racing_submission_never_changes_completed(practice):
         if kind == "save":
             return client.patch(
                 f"/tests/{test['id']}/borrador",
-                json={"pregunta_id": "q1", "respuesta_dada": "play"},
+                json={"pregunta_id": qid(test), "respuesta_dada": "play"},
                 headers=headers,
             )
         return client.post(f"/tests/{test['id']}/respuestas", json=payload(test), headers=headers)

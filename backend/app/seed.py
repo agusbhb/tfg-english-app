@@ -2,19 +2,26 @@
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 from bson import ObjectId
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import PyMongoError
 
+from app.bank_contracts import BankMetadataDocument, BankQuestionDocument, ContentKey
 from app.config import Settings
+from app.content import load_educational_sheet
 from app.database import create_client, initialize_database
 from app.models import (
-    ExerciseBankDocument,
     PromptDocument,
     SubjectDocument,
     validate_academic_reference,
     validate_catalog,
+)
+from app.prompts import (
+    GENERATION_PROMPT_NAME,
+    GENERATION_VARIABLES_BY_VERSION,
+    validate_generation_template,
 )
 
 SUBJECT_ID = ObjectId("700000000000000000000001")
@@ -38,7 +45,35 @@ SENTENCES = [
 ]
 
 
-def initial_documents() -> tuple[SubjectDocument, ExerciseBankDocument, list[PromptDocument]]:
+def initial_generation_prompt(version: int = 2) -> PromptDocument:
+    # Fuente exclusiva del seed. La lógica de negocio solo lee Prompts de MongoDB.
+    metadata = {
+        1: ("720000000000000000000003", datetime(2026, 11, 5, tzinfo=UTC)),
+        2: ("720000000000000000000004", datetime(2026, 11, 14, tzinfo=UTC)),
+    }
+    identifier, created = metadata[version]
+    source = (
+        Path(__file__).resolve().parent.parent
+        / f"seed_data/prompts/generacion_banco.v{version}.txt"
+    )
+    prompt = PromptDocument(
+        _id=ObjectId(identifier),
+        asignatura_id=SUBJECT_ID,
+        nombre=GENERATION_PROMPT_NAME,
+        tipo="generacion",
+        version=version,
+        activo=True,
+        variables_requeridas=sorted(GENERATION_VARIABLES_BY_VERSION[version]),
+        contenido_prompt=source.read_text(encoding="utf-8"),
+        creado_en=created,
+    )
+    validate_generation_template(prompt)
+    return prompt
+
+
+def initial_documents() -> tuple[
+    SubjectDocument, BankMetadataDocument, list[BankQuestionDocument], list[PromptDocument]
+]:
     subject = SubjectDocument(
         _id=SUBJECT_ID,
         codigo="ingles",
@@ -51,40 +86,37 @@ def initial_documents() -> tuple[SubjectDocument, ExerciseBankDocument, list[Pro
                     {
                         "tema_id": TOPIC_ID,
                         "nombre": "Present Simple",
+                        "nivel_mcer_objetivo": "A1",
                         "descripcion": "Forma afirmativa del presente simple: hábitos y rutinas.",
                     }
                 ],
             }
         ],
     )
-    examples = []
+    questions = []
     for index, (sentence, answer) in enumerate(SENTENCES, start=1):
-        examples.append(
-            {
-                "ejemplo_id": ObjectId(f"7100000000000000{index:08x}"),
-                "uso_practica": True,
-                "objetivo": "gramatica",
-                "presentacion": "frases_independientes",
-                "texto_base": None,
-                "preguntas": [
-                    {
-                        "pregunta_id": f"q{index}",
-                        "formato": "fill_blanks",
-                        "enunciado": sentence,
-                        "solucion": {
-                            "respuestas_aceptadas": [answer],
-                            "sensible_mayusculas": False,
-                        },
-                    }
-                ],
-            }
+        questions.append(
+            BankQuestionDocument(
+                _id=ObjectId(f"7100000000000000{index:08x}"),
+                banco_id=BANK_ID,
+                secuencia=index,
+                version=1,
+                enunciado=sentence,
+                respuesta_principal=answer,
+                solucion={"respuestas_aceptadas": [answer], "sensible_mayusculas": False},
+                origen="manual",
+                validacion={"estructural": "validada", "pedagogica": "revisada"},
+            )
         )
-    bank = ExerciseBankDocument(
+    bank = BankMetadataDocument(
         _id=BANK_ID,
-        asignatura_id=SUBJECT_ID,
-        nivel_id=LEVEL_ID,
         tema_id=TOPIC_ID,
-        ejemplos_resueltos=examples,
+        codigo_tema="present-simple",
+        nivel_mcer_objetivo="A1",
+        publicado_hasta=10,
+        ficha=load_educational_sheet(
+            ContentKey(codigo_tema="present-simple", nivel_mcer="A1", version=1)
+        ).referencia,
     )
     prompts = [
         PromptDocument(
@@ -103,12 +135,13 @@ def initial_documents() -> tuple[SubjectDocument, ExerciseBankDocument, list[Pro
         )
         for index, kind in enumerate(("generacion", "evaluacion"), start=1)
     ]
-    validate_academic_reference(subject, bank.nivel_id, bank.tema_id)
-    return subject, bank, prompts
+    prompts.append(initial_generation_prompt())
+    validate_academic_reference(subject, LEVEL_ID, bank.tema_id)
+    return subject, bank, questions, prompts
 
 
 async def seed_database(database: AsyncDatabase) -> None:
-    subject, bank, prompts = initial_documents()
+    subject, bank, questions, prompts = initial_documents()
     current = [
         SubjectDocument.model_validate(document)
         for document in await database.Asignaturas.find().to_list()
@@ -119,32 +152,42 @@ async def seed_database(database: AsyncDatabase) -> None:
             "El catálogo existente usa otros IDs; necesita una actualización explícita"
         )
     validate_catalog(current if effective in current else [*current, subject])
-    validate_academic_reference(effective, bank.nivel_id, bank.tema_id)
+    validate_academic_reference(effective, LEVEL_ID, bank.tema_id)
+    existing_bank = await database.Bancos.find_one(
+        {"tema_id": bank.tema_id, "nivel_mcer_objetivo": bank.nivel_mcer_objetivo}
+    )
+    if existing_bank is not None and existing_bank["_id"] != bank.id:
+        raise ValueError("El banco existente usa otro ID; revisa su configuración explícitamente")
     # Toda la validación anterior sucede antes de insertar datos.
     await initialize_database(database)
     await database.Asignaturas.update_one(
         {"codigo": subject.codigo}, {"$setOnInsert": subject.model_dump(by_alias=True)}, upsert=True
     )
-    await database.BancoEjercicios.update_one(
-        {"tema_id": bank.tema_id}, {"$setOnInsert": bank.model_dump(by_alias=True)}, upsert=True
-    )
-    # Migración acotada: habilita solo los ejemplos originales sin marca previa,
-    # si su contenido sigue coincidiendo. No modifica preguntas ni Tests.
-    for example in bank.ejemplos_resueltos:
+    # Publicar el banco después de insertar sus preguntas permite reanudar un seed parcial.
+    for question in questions:
         await database.BancoEjercicios.update_one(
-            {
-                "_id": bank.id,
-                "ejemplos_resueltos": {
-                    "$elemMatch": {
-                        "ejemplo_id": example.ejemplo_id,
-                        "uso_practica": {"$exists": False},
-                        "preguntas": [q.model_dump() for q in example.preguntas],
-                    }
-                },
-            },
-            {"$set": {"ejemplos_resueltos.$.uso_practica": True}},
+            {"banco_id": question.banco_id, "secuencia": question.secuencia},
+            {"$setOnInsert": question.model_dump(by_alias=True)},
+            upsert=True,
         )
+    await database.Bancos.update_one(
+        {"tema_id": bank.tema_id, "nivel_mcer_objetivo": bank.nivel_mcer_objetivo},
+        {"$setOnInsert": bank.model_dump(by_alias=True)},
+        upsert=True,
+    )
     for prompt in prompts:
+        if prompt.activo:
+            existing_active = await database.Prompts.find_one(
+                {
+                    "asignatura_id": prompt.asignatura_id,
+                    "tipo": prompt.tipo,
+                    "activo": True,
+                    "_id": {"$ne": prompt.id},
+                }
+            )
+            if existing_active:
+                # No desactivar ni sustituir una elección previa del administrador.
+                prompt = prompt.model_copy(update={"activo": False})
         await database.Prompts.update_one(
             {
                 "asignatura_id": prompt.asignatura_id,

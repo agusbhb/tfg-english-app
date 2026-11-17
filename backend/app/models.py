@@ -81,6 +81,7 @@ class Topic(Model):
     tema_id: MongoId
     nombre: NonEmpty
     descripcion: str | None = None
+    nivel_mcer_objetivo: MCER | None = None
 
 
 class Level(Model):
@@ -286,9 +287,19 @@ class QuestionOrigin(Model):
     pregunta_original_id: LocalId
 
 
+class BankQuestionOrigin(Model):
+    pregunta_id: LocalId
+    banco_id: MongoId
+    pregunta_banco_id: MongoId
+    version_pregunta: int = Field(gt=0, strict=True)
+    secuencia: int = Field(gt=0, strict=True)
+
+
 class TestDocument(Document):
     origen: Literal["banco", "ia"] | None = None
-    origenes_preguntas: list[QuestionOrigin] = Field(default_factory=list, max_length=50)
+    origenes_preguntas: list[QuestionOrigin | BankQuestionOrigin] = Field(
+        default_factory=list, max_length=50
+    )
     usuario_id: MongoId
     asignatura_id: MongoId
     nivel_id: MongoId

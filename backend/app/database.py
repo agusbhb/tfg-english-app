@@ -4,7 +4,7 @@ from pymongo.errors import CollectionInvalid
 
 from app.config import Settings
 
-COLLECTIONS = ("Usuarios", "Asignaturas", "Prompts", "BancoEjercicios", "Tests")
+COLLECTIONS = ("Usuarios", "Asignaturas", "Prompts", "Bancos", "BancoEjercicios", "Tests")
 
 
 def create_client(settings: Settings) -> AsyncMongoClient:
@@ -18,6 +18,14 @@ def create_client(settings: Settings) -> AsyncMongoClient:
 
 
 async def initialize_database(database: AsyncDatabase) -> None:
+    # Evitar modificar una BD anterior: el cambio de formato requiere una base nueva.
+    if (
+        await database.BancoEjercicios.find_one({"ejemplos_resueltos": {"$exists": True}})
+        or "tema_unique" in await database.BancoEjercicios.index_information()
+    ):
+        raise ValueError(
+            "Banco antiguo: utiliza una base nueva o una copia con migración explícita"
+        )
     existing = await database.list_collection_names()
     for name in COLLECTIONS:
         if name not in existing:
@@ -37,7 +45,16 @@ async def initialize_database(database: AsyncDatabase) -> None:
         unique=True,
         name="prompt_version_unique",
     )
-    await database.BancoEjercicios.create_index("tema_id", unique=True, name="tema_unique")
+    await database.Bancos.create_index(
+        [("tema_id", ASCENDING), ("nivel_mcer_objetivo", ASCENDING)],
+        unique=True,
+        name="tema_mcer_unique",
+    )
+    await database.BancoEjercicios.create_index(
+        [("banco_id", ASCENDING), ("secuencia", ASCENDING)],
+        unique=True,
+        name="banco_secuencia_unique",
+    )
     await database.Tests.create_index(
         [("usuario_id", ASCENDING), ("fechas.generacion", DESCENDING)], name="historial_usuario"
     )

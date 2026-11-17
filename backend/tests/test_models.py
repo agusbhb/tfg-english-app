@@ -39,17 +39,22 @@ def shared_example():
 
 
 def test_initial_catalog_and_bank_are_valid_and_use_bson_ids():
-    subject, bank, prompts = initial_documents()
-    assert len(bank.ejemplos_resueltos) == 10
+    subject, bank, questions, prompts = initial_documents()
+    assert len(questions) == 10
     assert isinstance(subject.model_dump(by_alias=True)["_id"], ObjectId)
     assert subject.model_dump(mode="json", by_alias=True)["_id"] == str(subject.id)
     assert subject.niveles[0].nombre_curso == "1.º ESO"
-    validate_academic_reference(subject, bank.nivel_id, bank.tema_id)
-    assert all(not prompt.activo and prompt.version == 1 for prompt in prompts)
+    validate_academic_reference(subject, subject.niveles[0].nivel_id, bank.tema_id)
+    assert len(prompts) == 3
+    assert [(prompt.nombre, prompt.version) for prompt in prompts if prompt.activo] == [
+        ("generacion_banco", 2)
+    ]
+    assert [prompt.nombre for prompt in prompts if prompt.activo] == ["generacion_banco"]
+    assert all(not prompt.activo for prompt in prompts if prompt.nombre.startswith("borrador_"))
 
 
 def test_global_ids_and_catalog_membership_are_checked():
-    subject, _, _ = initial_documents()
+    subject, _, _, _ = initial_documents()
     second = subject.model_copy(deep=True)
     second.id = ObjectId()
     second.codigo = "otra"
@@ -141,23 +146,34 @@ def test_shared_cloze_and_reading_without_gaps_are_supported():
 
 
 def test_bank_rejects_duplicate_examples():
-    _, bank, _ = initial_documents()
-    data = bank.model_dump(by_alias=True)
-    data["ejemplos_resueltos"].append(copy.deepcopy(data["ejemplos_resueltos"][0]))
+    example = shared_example()
+    data = dict(
+        asignatura_id=ObjectId(),
+        nivel_id=ObjectId(),
+        tema_id=ObjectId(),
+        ejemplos_resueltos=[example, copy.deepcopy(example)],
+    )
     with pytest.raises(ValidationError, match="ejemplo"):
         ExerciseBankDocument.model_validate(data)
 
 
 def fixed_test():
-    subject, bank, _ = initial_documents()
+    subject, bank, _, _ = initial_documents()
     return {
         "usuario_id": ObjectId(),
         "asignatura_id": subject.id,
-        "nivel_id": bank.nivel_id,
+        "nivel_id": subject.niveles[0].nivel_id,
         "tema_id": bank.tema_id,
         "objetivo": "gramatica",
         "presentacion": "frases_independientes",
-        "preguntas_generadas": bank.ejemplos_resueltos[0].model_dump()["preguntas"],
+        "preguntas_generadas": [
+            {
+                "pregunta_id": "q1",
+                "formato": "fill_blanks",
+                "enunciado": "I ___ (play).",
+                "solucion": {"respuestas_aceptadas": ["play"], "sensible_mayusculas": False},
+            }
+        ],
         "fechas": {"generacion": SEED_DATE, "resolucion": None},
     }
 

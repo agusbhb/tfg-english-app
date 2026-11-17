@@ -223,6 +223,7 @@ def test_catalog_health_cors_and_openapi(api):
         "Asignaturas",
         "Prompts",
         "BancoEjercicios",
+        "Bancos",
         "Tests",
     }
     spec = client.get("/openapi.json").json()
@@ -257,19 +258,16 @@ def test_seed_repeated_preserves_ids_manual_changes_users_and_tests(api, registr
     database.Asignaturas.update_one({"codigo": "ingles"}, {"$set": {"nombre": "Inglés revisado"}})
     database.BancoEjercicios.update_one(
         {},
-        {
-            "$set": {
-                "ejemplos_resueltos.0.preguntas.0.enunciado": "I ___ (play) tennis every Sunday."
-            }
-        },
+        {"$set": {"enunciado": "I ___ (play) tennis every Sunday."}},
     )
     before = {name: list(database[name].find()) for name in database.list_collection_names()}
     client.portal.call(seed_database, client.app.state.database)
     client.portal.call(seed_database, client.app.state.database)
     after = {name: list(database[name].find()) for name in database.list_collection_names()}
     assert before == after
-    assert len(after["BancoEjercicios"][0]["ejemplos_resueltos"]) == 10
-    assert len(after["Prompts"]) == 2 and all(not p["activo"] for p in after["Prompts"])
+    assert len(after["BancoEjercicios"]) == 10
+    assert len(after["Prompts"]) == 3
+    assert [p["nombre"] for p in after["Prompts"] if p["activo"]] == ["generacion_banco"]
     assert after["Tests"] == []
 
 
