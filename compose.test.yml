@@ -2,7 +2,10 @@
 services:
   mongodb-test:
     image: mongo:8.0.15
+    entrypoint: [bash, /opt/trainer/mongo-replica.sh]
     environment:
+      MONGO_REPLICA_SET: trainer-test
+      MONGO_REPLICA_HOST: mongodb-test:27017
       MONGO_INITDB_ROOT_USERNAME: test_admin
       MONGO_INITDB_ROOT_PASSWORD: local_isolated_test_admin_password
       MONGODB_DB: trainer_test_bootstrap
@@ -13,8 +16,10 @@ services:
       - /data/db
     volumes:
       - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/01-app-user.js:ro
+      - ./docker/mongo-replica.sh:/opt/trainer/mongo-replica.sh:ro
+      - ./docker/mongo-replica-health.js:/opt/trainer/mongo-replica-health.js:ro
     healthcheck:
-      test: [CMD, mongosh, --quiet, --eval, "db.adminCommand({ping: 1}).ok === 1 ? quit(0) : quit(1)"]
+      test: [CMD, mongosh, --quiet, /opt/trainer/mongo-replica-health.js]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -25,7 +30,7 @@ services:
       dockerfile: Dockerfile.test
     environment:
       # Esta instancia NO tiene red ni volumen compartidos con desarrollo.
-      TEST_MONGODB_URI: mongodb://trainer_test:local_isolated_test_app_password@mongodb-test:27017/?authSource=admin
+      TEST_MONGODB_URI: mongodb://trainer_test:local_isolated_test_app_password@mongodb-test:27017/?authSource=admin&replicaSet=trainer-test
       REQUIRE_MONGODB_TESTS: "1"
     depends_on:
       mongodb-test:

@@ -3,6 +3,7 @@ import secrets
 from uuid import uuid4
 
 import pytest
+from bson import ObjectId
 from fastapi.testclient import TestClient
 from pymongo import MongoClient
 
@@ -60,3 +61,29 @@ def registration(api):
         "asignatura_id": subject["id"],
         "nivel_id": subject["niveles"][0]["nivel_id"],
     }
+
+
+@pytest.fixture
+def publish_bank(api):
+    """Banco sintético ampliado solo en la BD aleatoria de cada prueba."""
+    database = api[1]
+
+    def publish(total=20):
+        bank = database.Bancos.find_one()
+        template = database.BancoEjercicios.find_one({"banco_id": bank["_id"]})
+        for sequence in range(11, total + 1):
+            question = dict(template)
+            question.update(
+                _id=ObjectId(),
+                secuencia=sequence,
+                enunciado=f"Example {sequence}: {template['enunciado']}",
+            )
+            database.BancoEjercicios.update_one(
+                {"banco_id": bank["_id"], "secuencia": sequence},
+                {"$setOnInsert": question},
+                upsert=True,
+            )
+        database.Bancos.update_one({"_id": bank["_id"]}, {"$set": {"publicado_hasta": total}})
+        return database.Bancos.find_one({"_id": bank["_id"]})
+
+    return publish

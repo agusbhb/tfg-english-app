@@ -1615,3 +1615,160 @@ Los servicios actuales solo crean índices y colecciones al arrancar; el conteni
 inicial se carga mediante el comando explícito de seed descrito en el procedimiento.
 Continúa el aviso conocido de Starlette/TestClient. No se ha ejecutado CI/Sonar
 en remoto ni se han realizado operaciones Git de escritura.
+
+## 2026-11-17 — Fase 3: reserva secuencial y cursor transaccional
+
+### Objetivo y alcance
+
+Reservar hasta diez preguntas publicadas por alumno y banco sin perder preguntas
+si falla la creación del intento. Se conservan los contratos públicos, snapshots,
+propiedad, borradores y corrector del incremento anterior. No hay preparados,
+LLM, reposición automática ni cambios en el contenido inicial de diez preguntas.
+
+### Implementación y decisiones
+
+- Nueva colección Progreso con el contrato BankProgressDocument ya disponible.
+  Índice único usuario_id/banco_id; ultima_secuencia_reservada es asignación,
+  no número de respuestas correctas ni de preguntas entregadas. version sigue
+  siendo la versión contractual, no un contador usado como lock.
+- reservations.py concentra la creación del snapshot y la reserva. practice.py
+  conserva validación académica y el resto del ciclo. No se acepta usuario_id,
+  banco_id, cursor, puntuación o estado desde el JSON público de creación.
+- El contador cero se provisiona con $setOnInsert antes de la transacción para
+  evitar competir por un upsert dentro de ella. Su existencia no consume preguntas.
+  El avance y la inserción del intento se confirman juntos en with_transaction.
+- Se lee la publicación y cursor dentro de la misma sesión y se selecciona el
+  intervalo [cursor+1, min(cursor+10, publicado_hasta)]. El bloque final puede
+  tener menos de diez preguntas, conforme al nuevo alcance aprobado. Un hueco
+  o pregunta publicada sin revisar devuelve 503 sin saltarla ni avanzar.
+- Retomar, guardar borrador y entregar no cambian Progreso. Descartar elimina
+  únicamente el pendiente propio; su cursor permanece consumido, incluso al
+  reiniciar el backend. El índice parcial de un pendiente por alumno/tema sigue
+  siendo la restricción global, además del cursor independiente por banco.
+- Agotamiento: POST /tests devuelve 409 y «Has agotado las preguntas publicadas
+  de este banco», conservando el progreso. Se ajusta PracticeView.vue porque
+  su comprobación posterior de pendientes limpiaba ese mensaje. Se conserva el
+  conflicto de otra pestaña que sí encuentra un pendiente que continuar.
+
+### Consistencia y compatibilidad con 2B
+
+ADR-003 y ADR-007 pasan a implementados localmente para reserva. Se selecciona
+replica set de un nodo y transacción corta con snapshot/majority/primario, usando
+el PyMongo asíncrono 4.18.2 existente. El callback no tiene llamadas externas.
+Se permite que el driver reintente conflictos transitorios y commit de resultado
+incierto. Presupuesto CSOT de diez segundos para la fase transaccional y cinco
+segundos de max_commit_time_ms. No se implementa compensación del cursor.
+
+Al arrancar, initialize_progress agrega los orígenes de los snapshots 2B por
+usuario/banco e inserta solamente claves ausentes con la mayor secuencia. Se hace
+antes del saneamiento de pendientes antiguos y de aceptar tráfico. Los intentos
+conservan sus documentos completos. Varios intentos 2B que repetían 1–10 inicializan
+10, no suman diez por intento. Un pendiente 2B sigue pudiendo retomarse o entregarse.
+Los cursores existentes no se resetean al arrancar o repetir el seed.
+
+Límites: los descartes físicos anteriores a fase 3 no se reconstruyen; sin
+snapshots identificables se comienza en cero. Las referencias legacy sin secuencia
+siguen legibles, pero no permiten inferir el progreso. Revisar la frontera si se
+editó contenido 2B con huecos: el máximo considera consumido el prefijo anterior.
+La adopción requiere detener escritores antiguos; no se hace en esta tarea.
+
+### Entorno aislado y operación
+
+compose.test.yml usa ahora MongoDB 8.0.15 como replica set autenticado, red
+propia, tmpfs y sin puertos publicados. El arranque genera una clave interna
+aleatoria fuera del repositorio; el healthcheck autenticado inicia solo un set
+no configurado y espera primario. .gitattributes fija LF para el script Bash
+montado desde Windows. No se añaden dependencias ni se modifica docker-compose.yml.
+
+compose.replica.yml permite una adopción manual sobre una copia del entorno.
+La sintaxis de ambos Compose se validó. El volumen de desarrollo no se abrió,
+convirtió ni arrancó. Un standalone no permite nuevas reservas y devuelve 503;
+no se incorpora un camino alternativo de dos escrituras no atómicas. La guía
+COPIA_RESTAURACION.md explica instalación vacía, restauración de una base 2B en
+otro proyecto y precauciones para inicializar los cursores. El overlay en la
+instalación de desarrollo continúa pendiente de validación manual.
+
+### Pruebas efectivamente ejecutadas
+
+| Comprobación | Resultado local |
+| --- | --- |
+| Backend completo, MongoDB replica set aislado | 195 aprobadas, 36,83 s en la ejecución final |
+| Cobertura backend/app, sin ramas | 906/938 = 96,59 % de líneas |
+| Ruff y formato | Correctos, 23 archivos Python |
+| Frontend completo | 67 aprobadas |
+| Cobertura frontend | 97,79 % líneas; 93,07 % ramas; 96,19 % sentencias; 98,94 % funciones |
+| ESLint, Prettier y build Vite | Correctos |
+| Compose de pruebas y overlay replica | Sintaxis válida |
+| Backup/restauración real en replica set | 29 documentos, siete colecciones, cero fallos |
+
+Se añaden 17 casos en test_reservations.py y se adaptan pruebas anteriores que
+asumían reutilizar las primeras preguntas. El banco sintético de pruebas tiene
+20 preguntas, con variantes de 23 y 40 para bloques parciales y regresión.
+Se verifican 1–10/11–20, independencia de alumnos/bancos, índice único de Progreso,
+reanudación, borrador, entrega, descarte, agotamiento y contenido publicado inválido.
+Se prueban reinicios con pendientes/completados 2B y reserva posterior desde 11.
+
+Hay fallos controlados antes del cursor, tras modificarlo y después de insertar
+el snapshot, tanto en el primer bloque como tras otro completado: la transacción
+real se aborta, conserva el cursor anterior y permite reintentar el mismo bloque.
+Otro caso inyecta TransientTransactionError después de insertar; otro pierde la
+respuesta de un commit real e inyecta UnknownTransactionCommitResult. El driver
+reintenta sin duplicar el intento ni consumir dos bloques. Son inyecciones en el
+driver, no un corte real de red ni pruebas de failover o caída del nodo.
+
+Cuatro peticiones sincronizadas leen el mismo cursor; solo una crea el pendiente,
+las otras reciben 409 y se comprueba que el driver repitió callbacks tras los
+conflictos reales de escritura. Otra prueba usa dos instancias de FastAPI contra
+la misma base. Las suites anteriores mantienen autorización y privacidad.
+Frontend incorpora una regresión para mostrar el agotamiento sin cerrar sesión.
+
+El script Test-BackupRestore.ps1 se repite con contenido sintético ampliado en
+su base efímera. Se copian y restauran veinte preguntas, un usuario, dos intentos,
+un catálogo, un banco, tres prompts y un Progreso. Antes del lifespan de destino
+coinciden todos los documentos e índices, incluido usuario_banco_unique. Después
+funcionan login, perfil, resultados, borrador y entrega. El origen sigue idéntico.
+Artefactos privados en .tools/backup-cc5a0b02499d4f15b234a68b4210974f, excluidos de
+Git; contenedores y red del ensayo retirados. Se conserva la evidencia histórica
+de dieciocho documentos de 2B, que corresponde al esquema de aquel momento.
+
+La primera regresión backend detectó cinco expectativas del formato/selección
+anterior (colecciones y reutilización de bloques); se adaptaron antes de la suite
+final. La nueva prueba Vue tuvo una aserción incorrecta sobre un token que no es
+público en auth.state; se corrigió para comprobar la sesión autenticada. La
+ejecución final de frontend pasa completa. Persiste la advertencia conocida de
+Starlette/TestClient; no se cambian dependencias por ella.
+
+### Archivos, seguimiento y límites pendientes
+
+Backend: database.py, practice.py, nuevo reservations.py. Pruebas: conftest.py,
+test_auth.py, test_practice.py, nuevo test_reservations.py. Infraestructura local:
+compose.test.yml, nuevo compose.replica.yml y scripts mongo-replica de docker/;
+LF específico en .gitattributes. Frontend: PracticeView.vue y practice.test.js.
+El verificador Python de backup se adapta a dos bloques. Se actualizan ADR,
+esta guía técnica, SEGUIMIENTO_CONTROL_TFG.md y COPIA_RESTAURACION.md.
+
+El seed real sigue ofreciendo diez preguntas: tras reservarlas, incluso si se
+descarta el intento, ese alumno agotará el banco hasta una publicación posterior.
+La reposición automática, estados preparados, mixtos, LLM y coordinación de lotes
+permanecen fuera del alcance. Un único nodo no proporciona alta disponibilidad.
+No se ha validado CI/Sonar remoto ni realizado operaciones Git de escritura.
+El README y el volumen de desarrollo se mantienen intactos.
+
+Comprobación final: coverage.xml resuelve sus trece archivos de backend/app
+desde la raíz del repositorio. Sintaxis Bash, JavaScript del healthcheck y
+PowerShell correctas; git diff --check correcto. No se encontraron coincidencias
+con los secretos locales en los diecinueve archivos revisados; los artefactos
+privados siguen excluidos. Los ADR y SEGUIMIENTO se actualizaron localmente,
+pero siguen ignorados por la configuración .gitignore actual del desarrollador,
+que no se modifica en esta fase. No hay archivos en staging.
+
+Reproducción de backend desde PowerShell, con Docker Desktop activo:
+
+```powershell
+docker compose -p trainer-reservations-tests -f compose.test.yml up --build --abort-on-container-exit --exit-code-from tests --attach tests
+docker compose -p trainer-reservations-tests -f compose.test.yml down --remove-orphans
+```
+
+En este equipo la construcción usó además `-f .tools/compose.test.ca.yml`, la
+configuración local de CA ya existente y excluida. La limpieza retira únicamente
+el proyecto de pruebas indicado. Los servicios de desarrollo no se detuvieron.

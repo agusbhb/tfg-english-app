@@ -225,6 +225,7 @@ def test_catalog_health_cors_and_openapi(api):
         "BancoEjercicios",
         "Bancos",
         "Tests",
+        "Progreso",
     }
     spec = client.get("/openapi.json").json()
     assert spec["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"

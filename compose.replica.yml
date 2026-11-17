@@ -1,0 +1,15 @@
+# Activación manual: usar junto a docker-compose.yml, tras backup y ensayo en copia.
+services:
+  mongodb:
+    entrypoint: [bash, /opt/trainer/mongo-replica.sh]
+    environment:
+      MONGO_REPLICA_SET: trainer-local
+      MONGO_REPLICA_HOST: mongodb:27017
+    volumes:
+      - ./docker/mongo-replica.sh:/opt/trainer/mongo-replica.sh:ro
+      - ./docker/mongo-replica-health.js:/opt/trainer/mongo-replica-health.js:ro
+    healthcheck:
+      test: [CMD, mongosh, --quiet, /opt/trainer/mongo-replica-health.js]
+  backend:
+    environment:
+      MONGODB_URI: mongodb://${MONGO_APP_USER:?Configura MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Configura MONGO_APP_PASSWORD}@mongodb:27017/${MONGODB_DB:-trainer}?authSource=${MONGODB_DB:-trainer}&replicaSet=trainer-local

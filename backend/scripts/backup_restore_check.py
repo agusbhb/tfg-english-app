@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from bson import json_util  # noqa: E402
+from bson import ObjectId, json_util  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from pymongo import MongoClient  # noqa: E402
 
@@ -50,6 +50,11 @@ def prepare(uri, source, target, state):
         password = secrets.token_urlsafe(24)
         with TestClient(application(uri, source)) as client:
             client.portal.call(seed_database, client.app.state.database)
+            # Contenido sintético solo para el ensayo: dos bloques distintos.
+            for question in list(mongo[source].BancoEjercicios.find()):
+                question.update(_id=ObjectId(), secuencia=question["secuencia"] + 10)
+                mongo[source].BancoEjercicios.insert_one(question)
+            mongo[source].Bancos.update_one({}, {"$set": {"publicado_hasta": 20}})
             subject = client.get("/asignaturas").json()[0]
             body = dict(
                 email="backup@example.com",

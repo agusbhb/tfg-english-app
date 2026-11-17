@@ -85,6 +85,20 @@ async function open(path) {
   wrapper = mount(App, { global: { plugins: [router] } })
   await flushPromises()
 }
+it('conserva el aviso de banco agotado cuando no existe un pendiente', async () => {
+  const message = 'Has agotado las preguntas publicadas de este banco'
+  api.createTest.mockRejectedValue(new ApiError(message, 409))
+  await open('/practicar')
+  await wrapper.get('#topic').setValue('topic')
+  await flushPromises()
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toBe(message)
+  expect(router.currentRoute.value.path).toBe('/practicar')
+  expect(api.pendingTest).toHaveBeenCalledTimes(2)
+  expect(api.createTest).toHaveBeenCalledTimes(1)
+  expect(auth.state.authenticated).toBe(true)
+})
 it('selecciona solo temas propios y confirma antes de enviar respuestas vacías', async () => {
   await open('/practicar')
   expect(wrapper.text()).not.toContain('No visible')

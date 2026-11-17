@@ -13,8 +13,9 @@ from app.seed import seed_database
 
 
 @pytest.fixture
-def practice(api, registration):
+def practice(api, registration, publish_bank):
     client, db, _ = api
+    publish_bank(40)
     client.post("/auth/register", json=registration)
     token = client.post(
         "/auth/login", json={k: registration[k] for k in ("email", "password")}
@@ -142,16 +143,18 @@ def test_topic_and_reviewed_selection(practice):
         client.post("/tests", json={"tema_id": str(ObjectId())}, headers=headers).status_code == 422
     )
     db.BancoEjercicios.update_many(
-        {"secuencia": {"$gt": 2}}, {"$set": {"validacion.pedagogica": "pendiente"}}
+        {"secuencia": {"$gt": 12}}, {"$set": {"validacion.pedagogica": "pendiente"}}
     )
+    assert client.post("/tests", json={"tema_id": topic}, headers=headers).status_code == 503
+    db.Bancos.update_one({}, {"$set": {"publicado_hasta": 12}})
     test = client.post("/tests", json={"tema_id": topic}, headers=headers).json()
     assert len(test["preguntas"]) == 2
     assert test["preguntas"][0]["pregunta_id"] == str(
-        db.BancoEjercicios.find_one({"secuencia": 1})["_id"]
+        db.BancoEjercicios.find_one({"secuencia": 11})["_id"]
     )
     client.delete(f"/tests/{test['id']}", headers=headers)
     db.BancoEjercicios.update_many({}, {"$set": {"validacion.pedagogica": "rechazada"}})
-    assert client.post("/tests", json={"tema_id": topic}, headers=headers).status_code == 404
+    assert client.post("/tests", json={"tema_id": topic}, headers=headers).status_code == 409
     db.Bancos.delete_many({})
     assert client.post("/tests", json={"tema_id": topic}, headers=headers).status_code == 404
 
@@ -203,20 +206,24 @@ def test_pending_creation_concurrency_and_other_topics(practice, monkeypatch):
     client, db, headers, test, topic = practice
     client.delete(f"/tests/{test['id']}", headers=headers)
     collection_type = type(client.app.state.database.Tests)
-    original_insert = collection_type.insert_one
+    original_find = collection_type.find_one
     ready = asyncio.Event()
     arrivals = 0
+    starts = 0
 
-    async def simultaneous_insert(collection, *args, **kwargs):
-        nonlocal arrivals
-        if collection.name == "Tests":
+    async def simultaneous_read(collection, *args, **kwargs):
+        nonlocal arrivals, starts
+        if collection.name == "Tests" and kwargs.get("session"):
+            starts += 1
+        result = await original_find(collection, *args, **kwargs)
+        if collection.name == "Progreso" and kwargs.get("session"):
             arrivals += 1
             if arrivals == 4:
                 ready.set()
             await asyncio.wait_for(ready.wait(), timeout=5)
-        return await original_insert(collection, *args, **kwargs)
+        return result
 
-    monkeypatch.setattr(collection_type, "insert_one", simultaneous_insert)
+    monkeypatch.setattr(collection_type, "find_one", simultaneous_read)
 
     def create(_):
         return client.post("/tests", json={"tema_id": topic}, headers=headers)
@@ -224,6 +231,7 @@ def test_pending_creation_concurrency_and_other_topics(practice, monkeypatch):
     with ThreadPoolExecutor(max_workers=4) as pool:
         responses = list(pool.map(create, range(4)))
     assert sorted(r.status_code for r in responses) == [201, 409, 409, 409]
+    assert starts > 4  # El driver ha reintentado callbacks por conflictos reales de escritura.
     assert db.Tests.count_documents({"estado": "pendiente"}) == 1
     other_topic = ObjectId()
     subject = db.Asignaturas.find_one()
@@ -240,7 +248,7 @@ def test_pending_creation_concurrency_and_other_topics(practice, monkeypatch):
             }
         },
     )
-    bank.update(_id=ObjectId(), tema_id=other_topic)
+    bank.update(_id=ObjectId(), tema_id=other_topic, publicado_hasta=1)
     db.Bancos.insert_one(bank)
     question = db.BancoEjercicios.find_one()
     question.update(_id=ObjectId(), banco_id=bank["_id"])

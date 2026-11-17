@@ -3,9 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from pymongo.errors import DuplicateKeyError
 
-from app.bank_contracts import BankMetadataDocument, BankQuestionDocument
 from app.models import (
     BlankQuestion,
     StudentAnswer,
@@ -13,6 +11,7 @@ from app.models import (
     TestDocument,
     validate_academic_reference,
 )
+from app.reservations import reserve_test
 from app.schemas import PublicTest
 
 
@@ -102,67 +101,8 @@ async def pending_test(database, user, topic_id):
 async def create_test(database, user, topic_id):
     if await pending_test(database, user, topic_id):
         raise HTTPException(409, "Ya tienes un test pendiente para este tema")
-    profile = user.perfil_academico
     topic = await validate_topic(database, user, topic_id)
-    document = await database.Bancos.find_one(
-        {"tema_id": topic_id, "nivel_mcer_objetivo": topic.nivel_mcer_objetivo}
-    )
-    if document is None:
-        raise HTTPException(404, "No hay ejercicios disponibles para este tema")
-    bank = BankMetadataDocument.model_validate(document)
-    questions, origins = [], []
-    documents = (
-        await database.BancoEjercicios.find(
-            {
-                "banco_id": bank.id,
-                "secuencia": {"$lte": bank.publicado_hasta},
-                "validacion.pedagogica": "revisada",
-            }
-        )
-        .sort("secuencia", 1)
-        .limit(10)
-        .to_list()
-    )
-    for document in documents:
-        question = BankQuestionDocument.model_validate(document)
-        identifier = str(question.id)
-        questions.append(
-            BlankQuestion(
-                pregunta_id=identifier,
-                formato="fill_blanks",
-                enunciado=question.enunciado,
-                solucion=question.solucion.model_dump(),
-            )
-        )
-        origins.append(
-            {
-                "pregunta_id": identifier,
-                "banco_id": bank.id,
-                "pregunta_banco_id": question.id,
-                "version_pregunta": question.version,
-                "secuencia": question.secuencia,
-            }
-        )
-    if not questions:
-        raise HTTPException(404, "No hay ejercicios disponibles para este tema")
-    test = TestDocument(
-        usuario_id=user.id,
-        asignatura_id=profile.asignatura_id,
-        nivel_id=profile.nivel_id,
-        tema_id=topic_id,
-        objetivo="gramatica",
-        nivel_mcer=bank.nivel_mcer_objetivo,
-        presentacion="frases_independientes",
-        origen="banco",
-        origenes_preguntas=origins,
-        preguntas_generadas=questions,
-        fechas={"generacion": datetime.now(UTC)},
-    )
-    try:
-        await database.Tests.insert_one(test.model_dump(by_alias=True))
-    except DuplicateKeyError:
-        raise HTTPException(409, "Ya tienes un test pendiente para este tema") from None
-    return test
+    return await reserve_test(database, user, topic)
 
 
 async def discard_test(database, user_id, test_id):

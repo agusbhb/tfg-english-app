@@ -2,9 +2,18 @@ from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
 from pymongo.asynchronous.database import AsyncDatabase
 from pymongo.errors import CollectionInvalid
 
+from app.bank_contracts import BankProgressDocument
 from app.config import Settings
 
-COLLECTIONS = ("Usuarios", "Asignaturas", "Prompts", "Bancos", "BancoEjercicios", "Tests")
+COLLECTIONS = (
+    "Usuarios",
+    "Asignaturas",
+    "Prompts",
+    "Bancos",
+    "BancoEjercicios",
+    "Tests",
+    "Progreso",
+)
 
 
 def create_client(settings: Settings) -> AsyncMongoClient:
@@ -58,7 +67,41 @@ async def initialize_database(database: AsyncDatabase) -> None:
     await database.Tests.create_index(
         [("usuario_id", ASCENDING), ("fechas.generacion", DESCENDING)], name="historial_usuario"
     )
+    await database.Progreso.create_index(
+        [("usuario_id", ASCENDING), ("banco_id", ASCENDING)],
+        unique=True,
+        name="usuario_banco_unique",
+    )
+    # Capturar también los snapshots 2B antes del saneamiento de pendientes.
+    await initialize_progress(database)
     await ensure_pending_index(database)
+
+
+async def initialize_progress(database: AsyncDatabase) -> None:
+    """Inicializa solo claves ausentes a partir de snapshots 2B conservados."""
+    groups = await database.Tests.aggregate(
+        [
+            {"$unwind": "$origenes_preguntas"},
+            {"$match": {"origenes_preguntas.pregunta_banco_id": {"$exists": True}}},
+            {
+                "$group": {
+                    "_id": {"usuario": "$usuario_id", "banco": "$origenes_preguntas.banco_id"},
+                    "ultima": {"$max": "$origenes_preguntas.secuencia"},
+                }
+            },
+        ]
+    )
+    async for group in groups:
+        progress = BankProgressDocument(
+            usuario_id=group["_id"]["usuario"],
+            banco_id=group["_id"]["banco"],
+            ultima_secuencia_reservada=group["ultima"],
+        )
+        await database.Progreso.update_one(
+            {"usuario_id": progress.usuario_id, "banco_id": progress.banco_id},
+            {"$setOnInsert": progress.model_dump(by_alias=True)},
+            upsert=True,
+        )
 
 
 async def ensure_pending_index(database: AsyncDatabase) -> None:

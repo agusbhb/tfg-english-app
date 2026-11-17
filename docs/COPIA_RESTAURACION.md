@@ -1,6 +1,6 @@
 # Copia, restauración y ensayos aislados de TrAIner
 
-## Ensayo reproducible de fase 2B
+## Ensayo reproducible de copia y restauración (actualizado para fase 3)
 
 Desde la raíz del repositorio, con Docker Desktop activo, ejecutar en PowerShell:
 
@@ -18,6 +18,9 @@ El script utiliza compose.test.yml y un nombre de proyecto nuevo. MongoDB tiene
 red propia, almacenamiento tmpfs y ningún puerto publicado. No usa el servicio
 mongodb ni el volumen mongodb_data de desarrollo. Origen y destino tienen nombres
 trainer_test_backup_<uuid>_source/restored. El comprobador rechaza otros nombres.
+Desde fase 3 la instancia es un replica set autenticado de un nodo. El verificador
+añade diez preguntas sintéticas a la base de ensayo para disponer de dos bloques;
+no cambia el seed de la aplicación ni la base de desarrollo. La copia incluye Progreso.
 
 El recorrido ejecutado es:
 
@@ -133,7 +136,7 @@ siendo legibles cuando se encuentran en una base compatible; no necesitan el
 banco original para corregirse. Para adoptar el esquema actual desde datos de
 prueba descartables, preparar una instalación nueva y ejecutar app.seed.
 
-## Adoptar el esquema nuevo en desarrollo (operaciones manuales pendientes)
+## Instalación vacía con el esquema actual (operaciones manuales pendientes)
 
 La base actual contiene datos de prueba y no se ha migrado ni modificado. Para
 adoptar este cambio conservando el volumen anterior, crear otro proyecto Compose
@@ -144,7 +147,7 @@ no se han ejecutado contra su entorno durante el ensayo.
    puertos 8000, 5173 y, si procede, 8081. `docker compose stop` no elimina su volumen.
    No usar `down -v`, `volume rm` ni `prune`.
 2. Crear un archivo local nuevo y sustituir todos sus marcadores por secretos
-   aleatorios. Elegir `MONGODB_DB=trainer_schema2` y mantener coherente la URI
+   aleatorios. Elegir `MONGODB_DB=trainer_schema3` y mantener coherente la URI
    para ejecuciones fuera de Compose. El Compose construye su propia URI con las
    variables de usuario, contraseña y base. No basta con cambiar MONGODB_DB en
    el volumen anterior: el script mongo-init solo provisiona usuarios al inicializar
@@ -152,21 +155,22 @@ no se han ejecutado contra su entorno durante el ensayo.
 
 ```powershell
 # Solo si todavía no existe: no sobrescribir una configuración local preparada.
-if (Test-Path -LiteralPath .env.schema2) { throw '.env.schema2 ya existe; revisarlo manualmente' }
-Copy-Item -LiteralPath .env.example -Destination .env.schema2
-# Editar .env.schema2 y sustituir los marcadores antes de continuar.
+if (Test-Path -LiteralPath .env.schema3) { throw '.env.schema3 ya existe; revisarlo manualmente' }
+Copy-Item -LiteralPath .env.example -Destination .env.schema3
+# Editar .env.schema3 y sustituir los marcadores antes de continuar.
 ```
 
-3. Comprobar que no existe previamente el proyecto/volumen trainer-schema2.
-   El nombre de proyecto crea un volumen propio trainer-schema2_mongodb_data.
+3. Comprobar que no existe previamente el proyecto/volumen trainer-schema3.
+   El nombre de proyecto crea un volumen propio trainer-schema3_mongodb_data.
+   Desde fase 3 el overlay replica es necesario para crear nuevas reservas.
    Arrancar y sembrar explícitamente:
 
 ```powershell
-docker compose --env-file .env.schema2 -p trainer-schema2 up --build -d
+docker compose --env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml up --build -d
 if ($LASTEXITCODE -ne 0) { throw 'Falló el arranque; revisar antes de continuar' }
-docker compose --env-file .env.schema2 -p trainer-schema2 exec backend python -m app.seed
+docker compose --env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml exec backend python -m app.seed
 if ($LASTEXITCODE -ne 0) { throw 'Falló el seed' }
-docker compose --env-file .env.schema2 -p trainer-schema2 ps
+docker compose --env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml ps
 Invoke-RestMethod http://localhost:8000/health
 ```
 
@@ -176,14 +180,68 @@ Invoke-RestMethod http://localhost:8000/health
    diez preguntas manuales y generacion_banco v2 activa. Las pruebas automatizadas
    verifican esta persistencia; el arranque por sí solo crea colecciones e índices,
    pero no carga el contenido.
-5. Utilizar en adelante `--env-file .env.schema2 -p trainer-schema2` en todos los
+   Tras consumir ese único bloque inicial, la práctica mostrará el banco agotado.
+   No hay reposición automática ni ampliación del seed a veinte preguntas reales.
+5. Utilizar en adelante `--env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml` en todos los
    comandos de ese entorno, incluido el perfil opcional `--profile tools`. Conservar
    el volumen anterior hasta revisar el resultado. Para volver al código anterior,
    detener el proyecto nuevo y usar una revisión compatible con la base anterior.
 
-.env.schema2 y sus secretos están excluidos por la regla .env.*. No mostrar
+.env.schema3 y sus secretos están excluidos por la regla .env.*. No mostrar
 `docker compose config` en informes compartidos: puede interpolar credenciales.
 Esta adopción manual todavía no está validada contra la instalación de desarrollo.
+
+## Conservar usuarios e intentos de una base 2B
+
+No aplicar el overlay directamente sobre el volumen original durante el ensayo.
+Detener los escritores 2B, hacer la copia de su base según el procedimiento anterior
+y registrar el hash. Preparar el entorno privado .env.schema3 y proyecto nuevo del
+apartado anterior, pero arrancar primero SOLO MongoDB:
+
+```powershell
+docker compose --env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml up -d --wait mongodb
+if ($LASTEXITCODE -ne 0) { throw 'No está disponible el primario de la copia' }
+# .tools/trainer-backup.archive.gz debe ser la copia privada de la base 2B.
+docker compose --env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml cp .tools/trainer-backup.archive.gz mongodb:/tmp/trainer-backup.archive.gz
+if ($LASTEXITCODE -ne 0) { throw 'Falló la carga de la copia' }
+$taskSource = Read-Host 'Nombre de la base 2B incluida en el archivo'
+$taskRestore = 'mongorestore --host localhost --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --archive=/tmp/trainer-backup.archive.gz --gzip --nsInclude "$1.*" --nsFrom "$1.*" --nsTo "$MONGODB_DB.*" --stopOnError'
+docker compose --env-file .env.schema3 -p trainer-schema3 -f docker-compose.yml -f compose.replica.yml exec -T mongodb sh -c $taskRestore sh $taskSource
+if ($LASTEXITCODE -ne 0) { throw 'Falló la restauración; no arrancar el backend' }
+```
+
+El destino de aplicación debe estar vacío; los usuarios de autenticación MongoDB
+ya provisionados no son la colección Usuarios de la aplicación. Comparar los
+documentos e índices con el inventario de la copia ANTES del arranque. Revisar
+especialmente los snapshots/orígenes; no ejecutar todavía el seed para inventariar.
+Después arrancar backend y frontend del mismo proyecto con up --build -d.
+
+El arranque crea Progreso e inicializa las claves ausentes desde la mayor secuencia
+de cada alumno/banco en los intentos 2B conservados, antes de aceptar peticiones.
+No modifica los snapshots ni suma sus preguntas: diez intentos que repiten 1–10
+inicializan 10. Retomar y entregar no avanzan el cursor. Descartar consume el bloque.
+Sin intentos conservados se comienza en cero; los descartes físicos de 2B no se
+pueden inferir. Los orígenes legacy sin secuencia no permiten reconstrucción.
+Revisar manualmente la frontera si el contenido 2B se editó con huecos de secuencia.
+
+Comprobar login, borrador, resultados e IDs anteriores, cursor y siguiente bloque.
+Con el seed original de diez preguntas, un alumno que ya reservó 1–10 encontrará
+el banco agotado; es el resultado esperado. Mantener la copia y el volumen anterior
+hasta aceptar el ensayo. No revertir ejecutando código anterior sobre el esquema
+nuevo: volver a una copia y una revisión compatibles. No se ha realizado esta
+adopción sobre el volumen de desarrollo.
+
+## Evidencia de fase 3 del 2026-11-17
+
+Se ha repetido el script en un proyecto temporal distinto con MongoDB 8.0.15,
+replica set autenticado y PyMongo 4.18.2. Resultado: 29 documentos restaurados,
+cero fallos, siete colecciones, veinte preguntas y un Progreso con cursor 20.
+Se conservan usuario, completado y pendiente con borrador. Se compararon todos
+los documentos e índices antes del lifespan y se verificó el flujo de aplicación
+en el destino, además de que el origen permanecía idéntico. El índice
+usuario_banco_unique también se restauró. Artefactos privados en
+.tools/backup-cc5a0b02499d4f15b234a68b4210974f; contenedores y red retirados.
+La evidencia siguiente pertenece al ensayo histórico de 2B, sin Progreso.
 
 ## Evidencia del ensayo del 2026-11-16
 

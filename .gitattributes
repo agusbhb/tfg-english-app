@@ -1,0 +1,2 @@
+# Bash montado desde Windows: conservar saltos LF al hacer checkout.
+docker/mongo-replica.sh text eol=lf

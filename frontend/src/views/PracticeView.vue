@@ -77,7 +77,10 @@ async function start() {
     await router.push({ name: 'test', params: { id: test.id } })
   } catch (cause) {
     error.value = cause.message
-    if (cause.status === 409) await checkPending()
+    if (cause.status === 409) {
+      await checkPending()
+      if (!pending.value) error.value = cause.message
+    }
   } finally {
     starting.value = false
   }
