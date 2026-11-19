@@ -12,11 +12,18 @@ from app.bank_contracts import BankMetadataDocument, BankProgressDocument, BankQ
 from app.models import BlankQuestion, TestDocument
 
 
+class BankExhausted(HTTPException):
+    def __init__(self, bank_id, cursor):
+        super().__init__(409, "Has agotado las preguntas publicadas de este banco")
+        self.bank_id = bank_id
+        self.cursor = cursor
+
+
 def snapshot(user, bank, documents):
     questions, origins = [], []
     for document in documents:
         question = BankQuestionDocument.model_validate(document)
-        if question.validacion.pedagogica != "revisada":
+        if question.validacion.pedagogica not in ("revisada", "automatica"):
             raise HTTPException(503, "El contenido publicado del banco necesita revisión")
         identifier = str(question.id)
         questions.append(
@@ -82,7 +89,7 @@ async def reserve_test(database, user, topic):
         )
         last = current.ultima_secuencia_reservada
         if last >= published.publicado_hasta:
-            raise HTTPException(409, "Has agotado las preguntas publicadas de este banco")
+            raise BankExhausted(bank.id, last)
         end = min(last + 10, published.publicado_hasta)
         documents = (
             await database.BancoEjercicios.find(

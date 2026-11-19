@@ -1,8 +1,9 @@
 export class ApiError extends Error {
-  constructor(message, status = 0) {
+  constructor(message, status = 0, code = undefined) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
 
@@ -68,6 +69,7 @@ export function createApiClient(
       throw new ApiError(
         errorMessage(response.status, data?.detail, path),
         response.status,
+        typeof data?.codigo === 'string' ? data.codigo : undefined,
       )
     return data
   }

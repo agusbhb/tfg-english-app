@@ -1,5 +1,7 @@
 """Lectura de Prompts y composición validada. Sin proveedor ni plantilla de respaldo."""
 
+import json
+import re
 from string import Formatter
 from typing import Literal
 
@@ -12,7 +14,11 @@ from app.models import MCER, Model, PromptDocument, object_id
 GENERATION_PROMPT_NAME = "generacion_banco"
 LEGACY_GENERATION_VARIABLES = {"tema", "nivel_mcer", "cantidad", "ficha_educativa"}
 GENERATION_VARIABLES = LEGACY_GENERATION_VARIABLES | {"idioma_objetivo"}
-GENERATION_VARIABLES_BY_VERSION = {1: LEGACY_GENERATION_VARIABLES, 2: GENERATION_VARIABLES}
+GENERATION_VARIABLES_BY_VERSION = {
+    1: LEGACY_GENERATION_VARIABLES,
+    2: GENERATION_VARIABLES,
+    3: GENERATION_VARIABLES | {"ejemplos_pedagogicos", "enunciados_excluidos"},
+}
 
 
 class GenerationParameters(Model):
@@ -67,21 +73,44 @@ async def load_generation_prompt(database, subject_id) -> PromptDocument:
 
 
 def render_generation_prompt(
-    prompt: PromptDocument, parameters: GenerationParameters, sheet: EducationalSheet
+    prompt: PromptDocument,
+    parameters: GenerationParameters,
+    sheet: EducationalSheet,
+    exclusions=(),
 ) -> str:
     validate_generation_template(prompt)
     if not prompt.activo:
         raise ValueError("La plantilla de generación no está activa")
     if parameters.content_key().model_dump() != sheet.referencia.model_dump(exclude={"sha256"}):
         raise ValueError("La ficha no corresponde a los parámetros de generación")
+    content = sheet.contenido
+    examples = ""
+    if prompt.version >= 3:
+        section = re.search(r"(?ms)^## Ejemplos revisados\n(.*?)(?=^## |\Z)", content)
+        if section:
+            examples = section[1]
+            content = content[: section.start()] + content[section.end() :]
+        excluded = {" ".join(text.split()).casefold() for text in exclusions}
+
+        def without_excluded_lines(text):
+            return "\n".join(
+                line
+                for line in text.splitlines()
+                if not any(key in " ".join(line.split()).casefold() for key in excluded)
+            )
+
+        content = without_excluded_lines(content)
+        examples = without_excluded_lines(examples).strip() or "(Sin ejemplos adicionales.)"
     # Una sola interpolación: llaves dentro de la ficha no se interpretan de nuevo.
     return prompt.contenido_prompt.format_map(
         {
             "tema": parameters.tema,
             "nivel_mcer": parameters.nivel_mcer,
             "cantidad": parameters.cantidad,
-            "ficha_educativa": sheet.contenido,
+            "ficha_educativa": content,
             "idioma_objetivo": parameters.idioma_objetivo,
+            "ejemplos_pedagogicos": examples,
+            "enunciados_excluidos": json.dumps(list(exclusions), ensure_ascii=False),
         }
     )
 

@@ -1772,3 +1772,582 @@ docker compose -p trainer-reservations-tests -f compose.test.yml down --remove-o
 En este equipo la construcción usó además `-f .tools/compose.test.ca.yml`, la
 configuración local de CA ya existente y excluida. La limpieza retira únicamente
 el proyecto de pruebas indicado. Los servicios de desarrollo no se detuvieron.
+
+## 2026-11-17 — Reposición del banco en segundo plano con proveedor inyectable
+
+### Objetivo y decisión de alcance
+
+Continuar desde fase 3 solicitando un lote compartido cuando, tras confirmar una
+reserva, quedan veinte o menos preguntas por delante del cursor. Se empieza por
+lotes de treinta, con ambos parámetros configurables. El desarrollador indica
+expresamente mantener proveedor/modelo pendientes en los ADR, usar la simulación
+solo en pruebas y no anunciar una preparación ficticia en el entorno habitual.
+No se conecta un servicio externo, no hay consumo de saldo y no se implementan
+feedback ni tests preparados. La fase se registra como F4A, no como integración
+LLM real terminada.
+
+### Implementación y arquitectura
+
+- generation.py define el puerto GenerationProvider y los contratos internos de
+  petición/respuesta. Se inyecta al crear FastAPI. No hay proveedor de respaldo
+  ni simulación en app; el único SimulatedProvider está en tests.
+- replenishment.py implementa un worker asíncrono del lifespan con cola durable
+  embebida en Bancos.reposicion, sin nuevas colecciones ni dependencias. El worker
+  procesa un lote a la vez por instancia; distintas instancias se coordinan en
+  MongoDB. La petición HTTP solo confirma la reserva y solicita la tarea.
+- La condición de encolado compara publicado_hasta con la última secuencia del
+  snapshot confirmado. Una actualización condicionada impide reemplazar una tarea
+  pendiente/en curso/error por otra solicitud concurrente del mismo banco.
+- El job conserva generacion_id, cantidad, intentos y estados pendiente/en_curso/
+  error/completada. Un claim atómico asigna token y lease. Por defecto, timeout de
+  proveedor de 60 s, lease de 90 s, tres intentos y cinco segundos entre reintentos.
+  El lease se valida contra el timeout. El sondeo interno es de un segundo.
+- La llamada al proveedor está fuera de las transacciones. Antes de publicar se
+  verifica token/estado/vencimiento y referencia educativa; una transacción corta
+  guarda nuevas preguntas y extremo publicado. Un worker tardío no puede publicar
+  con un token sustituido. No se modifica Progreso ni Tests durante la reposición.
+- Si falla el encolado tras el commit, el intento sigue devolviéndose correctamente.
+  La solicitud sobre un banco agotado puede recuperar esa solicitud de reposición.
+  No se afirma atomicidad entre commit de reserva y encolado posterior.
+
+### Contenido y trazabilidad
+
+Se reutilizan la plantilla activa versionada de Prompts, GenerationParameters y
+la ficha cuyo hash/tema/MCER/version figuran en Bancos. El backend resuelve Inglés
+como en fase 1. No se escribe una plantilla alternativa en negocio. En las pruebas
+se comprueba v2 realmente recuperada y renderizada, no solo una cadena prefijada.
+
+El lote completo pasa el contrato existente: cantidad exacta, un hueco, principal
+entre aceptadas, dos distractores diferentes de las soluciones, ausencia de campos
+internos y enunciados duplicados. Un lote inválido se rechaza íntegro. Se excluyen
+enunciados ya existentes en el banco normalizando espacios y mayúsculas, y las
+aceptadas se insertan con secuencias contiguas después de publicado_hasta. Si todas
+son repetidas, la tarea falla sin publicar. No se deduplican equivalencias semánticas.
+
+Cada pregunta nueva conserva origen llm y generación/modelo/prompt/ficha; la
+versión inicial de pregunta es 1. Se introduce pedagogica=automatica para no
+atribuir una revisión humana que no existe. Esta validación NO acredita corrección
+gramatical ni calidad pedagógica. No se habilita apta_multiple_choice. La revisión
+de aceptación educativa se mantiene pendiente al elegir proveedor y modelo.
+
+ultima_generacion registra métricas del último intento con contexto válido, con
+errores seguros. Latencia también para fallos; tokens/coste desconocidos son None.
+Se corrigieron advertencias iniciales de serialización construyendo GenerationError
+tipado al actualizar las métricas. No se guarda texto de excepciones del proveedor
+ni se añade un histórico completo de intentos/costes.
+
+### API, Vue y ausencia de proveedor
+
+Los éxitos de POST /tests mantienen su DTO. Agotamiento devuelve 409 con detail y
+codigo: banco_reponiendo, reposicion_fallida, proveedor_no_configurado, banco_agotado
+o preguntas_disponibles si una publicación concurrente ya dejó contenido nuevo.
+No se añaden parámetros públicos ni endpoints de administración de generaciones.
+Autorización, borradores y corrección determinista continúan funcionando.
+
+Sin proveedor no hay worker ni encolado, y una tarea antigua no provoca la respuesta
+banco_reponiendo. Vue muestra preparación solo ante ese código. Distingue fallo y
+falta de configuración, permite comprobar disponibilidad sin polling y ofrece otro
+tema únicamente si existe en el catálogo del alumno. La navegación sigue usando
+Vue Router y el token en memoria.
+
+### Comprobaciones ejecutadas
+
+| Comprobación | Resultado local |
+| --- | --- |
+| Backend completo con MongoDB replica set aislado | 221 aprobadas, 49,51 s en la ejecución final |
+| Cobertura backend/app, sin ramas | 1110/1151 = 96,44 % de líneas |
+| Ruff y formato | Correctos, 26 archivos Python |
+| Frontend completo | 72 aprobadas |
+| Cobertura frontend | 98,40 % líneas; 93,42 % ramas; 96,81 % sentencias; 98,96 % funciones |
+| ESLint, Prettier, build Vite | Correctos |
+| Informe XML | Quince archivos backend/app resueltos desde la raíz |
+| Compose habitual más overlay replica | Configuración válida; no se arrancó desarrollo |
+
+test_replenishment.py añade 26 casos: umbral por defecto y configurable; frontera
+de veinte frente a veintiuna preguntas; lote configurable; petición que devuelve
+el intento mientras el proveedor sigue bloqueado; dos alumnos/dos workers; fallo
+y timeout; reintento con identidad estable; proveedor ausente y tarea antigua;
+lotes inválidos y duplicadas; rollback tras insertar; worker con lease vencido;
+recuperación tras reinicio; commit incierto; fallo al encolar; autorización y
+contexto sin prompt activo. Se conserva toda la regresión anterior de fase 3.
+
+Los fallos de publicación y respuesta de commit se inyectan en el driver sobre
+escrituras/commit reales en MongoDB. No se simula una caída física o partición real
+de red ni se prueba un proveedor comercial. La simulación y todas las preguntas
+generadas en estas pruebas permanecen en bases aleatorias efímeras.
+
+Frontend añade cinco casos para interpretar el código HTTP, estado preparando,
+alternativas de tema, ausencia de proveedor y fallo. Pasan también las pruebas
+previas de autenticación, confirmación de entrega y autosave exclusivamente blur.
+La advertencia conocida de Starlette/TestClient persiste; no se cambian dependencias.
+
+### Archivos y operación
+
+Nuevos: backend/app/generation.py, replenishment.py y tests/test_replenishment.py.
+Modificados: bank_contracts.py, config.py, main.py, reservations.py; frontend/src/api.js,
+views/PracticeView.vue y pruebas api/practice. docker-compose.yml y .env.example
+exponen solamente BANK_REFILL_THRESHOLD y BANK_REFILL_BATCH_SIZE (20/30).
+Los controles internos del worker se configuran mediante Settings/entorno del
+proceso. Se actualizan ADR-005/006/007, seguimiento y nota de recuperación.
+Los ADR y seguimiento siguen siendo locales/ignorados por las reglas del autor.
+No se cambia README, configuración Git ni requisitos/dependencias.
+
+Para repetir la suite desde PowerShell con Docker Desktop:
+
+```powershell
+docker compose -p trainer-refill-tests -f compose.test.yml up --build --abort-on-container-exit --exit-code-from tests --attach tests
+docker compose -p trainer-refill-tests -f compose.test.yml down --remove-orphans
+```
+
+En este equipo se añadió el override local .tools/compose.test.ca.yml para la CA
+de construcción. Se retiraron únicamente contenedores y red de trainer-refill-tests.
+El volumen y los servicios de desarrollo quedaron intactos. No se ejecutó CI/Sonar
+remoto ni se realizaron operaciones Git de escritura.
+
+### Límites y decisiones pendientes
+
+Elegir proveedor/modelo y adaptador real; evaluar contenido, costes y latencias;
+definir histórico completo de métricas y operación tras error terminal. Un lote
+puede requerir otra llamada tras una caída anterior a la publicación: se garantiza
+no duplicar publicaciones, no facturación externa exactamente una vez. El payload
+pendiente no se persiste. La deduplicación recorre enunciados del banco al publicar;
+se revisará una estrategia de huellas/índice cuando el volumen lo justifique.
+Los tests preparados, mixtos y feedback siguen pendientes de sus fases.
+
+## 2026-11-18 — OpenRouter/Anthropic BYOK y adopción de .env sin cambiar datos
+
+### Objetivo y alcance
+
+Integrar OpenRouter reutilizando GenerationProvider, restringirlo a Anthropic,
+preparar una llamada manual de cinco preguntas Present Simple A1 sin publicación
+y adoptar el entorno de fase 3 mediante .env normal. El desarrollador ejecutará
+la llamada real, el arranque con datos y las operaciones Git. Solo se han probado
+respuestas simuladas y bases de pruebas aisladas.
+
+### Adaptador y validación
+
+OpenRouterProvider usa Chat Completions en un endpoint HTTPS fijo. Se mantiene
+HTTPX 0.28.1, ya existente en desarrollo, promovido a requirements de runtime;
+no se instala SDK ni se cambia esa versión. El modelo es configurable por
+OPENROUTER_MODEL, restringido a identificadores anthropic/. Haiku 4.5 se deja
+como ejemplo inicial configurable, sin afirmar superioridad medida.
+
+La solicitud incluye only=[anthropic], allow_fallbacks=false, require_parameters=true
+y JSON Schema estricto. No hay redirects, reintentos HTTP, modelos alternativos
+ni llamadas adicionales para reparar la salida. Se conserva el prompt completo
+versionado y el contrato GenerationOutput. La preparación de ficha/plantilla
+se comparte entre el worker y el comando manual mediante generation.py.
+
+Se comprueban proveedor Anthropic, modelo y confirmación BYOK de la respuesta;
+se rechaza una confirmación ausente, falsa o contradictoria. BYOK requiere además
+bloquear capacidad compartida en el workspace; el filtro de proveedor no sustituye
+ese ajuste. La comprobación posterior no revierte una factura ya producida.
+No se accede a la cuenta ni se configura el workspace desde el backend.
+
+GenerationResponse añade metadata opcional de llamada/modelo/proveedor/BYOK y
+mantiene compatibilidad con los simulados anteriores. Los tokens se conservan si
+se conocen; no se confunde usage.cost=0 con el coste total Anthropic BYOK.
+Los errores omiten cuerpos HTTP y credenciales. La clave Anthropic permanece
+en el workspace; solo OPENROUTER_API_KEY entra al entorno privado del backend.
+
+### Ensayo manual y reposición desactivada
+
+BANK_REFILL_ENABLED=false por defecto. Configurar una clave no arranca el worker.
+Se conserva la inyección explícita de proveedores de prueba. Si falta clave, la
+API mantiene proveedor_no_configurado; si existe pero la reposición está apagada,
+devuelve reposicion_desactivada y Vue muestra ese modo sin preparación ficticia.
+
+scripts.preview_openrouter lee el banco Present Simple A1, su ficha y la plantilla
+activa, pide exactamente cinco preguntas por defecto y devuelve JSON para revisión.
+Muestra modelo, tokens e id de llamada si existe, sin secretos. No arranca FastAPI
+ni ejecuta inicialización, seed, tareas o escrituras MongoDB; no hay opción de
+publicación. Rechaza ejecutarse con la reposición activada. Las pruebas verifican
+una sola llamada y la igualdad de documentos/índices antes y después en base aislada.
+La revisión lingüística de las preguntas sigue siendo necesaria.
+
+### Entorno observado y procedimiento de adopción
+
+Docker Desktop estaba detenido al comenzar y se inició para las comprobaciones
+aisladas. Solo se inspeccionaron metadatos del entorno existente: proyecto
+trainer-schema3, volumen trainer-schema3_mongodb_data, base trainer, réplica
+declarada trainer-local y host mongodb:27017. Se comprobó la coincidencia de
+credenciales y JWT con .env.schema3 sin imprimir valores. No se abrió MongoDB de
+desarrollo ni se ejecutó el procedimiento de adopción.
+
+docker-compose.yml incorpora ahora la réplica que antes añadía el overlay.
+compose.replica.yml se conserva como compatibilidad. El arranque normal toma
+.env y un volumen nombrado explícito; su ausencia de configuración bloquea el
+arranque. La adopción lo declara externo para evitar crear silenciosamente otro
+vacío. .env.example queda reservado para una instalación nueva y volumen propio.
+
+Use-Phase3Environment.ps1 inspecciona contenedores, contrasta configuración y
+prepara .env desde schema3 conservando proyecto, volumen, base, contraseñas y JWT.
+Guarda el destino anterior en .tools, conserva una clave OpenRouter ya introducida
+en el destino y mantiene la reposición apagada. No ejecuta comandos Docker de
+escritura, seed, migraciones ni consultas MongoDB. No modifica schema2/schema3.
+No se ha ejecutado contra el .env real; los tres archivos privados se conservan.
+
+data_snapshot hace inventario de solo lectura con base, replica set, recuentos y
+hashes de documentos e índices de todas las colecciones, sin imprimir contenido
+privado. El procedimiento pausa escritores, arranca solo MongoDB en el mismo
+volumen, toma una referencia antes de arrancar el backend nuevo y compara después.
+No se deben crear/entregar tests ni editar borradores entre comparaciones.
+
+### Comprobaciones efectivamente ejecutadas
+
+| Comprobación | Resultado local |
+| --- | --- |
+| Backend completo, MongoDB replica set aislado | 252 aprobadas, 52,43 s en la ejecución final |
+| Cobertura backend/app, sin ramas | 1186/1228 = 96,58 % de líneas |
+| Ruff y formato | Correctos, 30 archivos Python |
+| Frontend completo | 73 aprobadas |
+| Cobertura frontend | 98,40 % líneas; 93,42 % ramas |
+| ESLint, Prettier, build Vite | Correctos |
+| Imagen backend de runtime | Construcción correcta con HTTPX instalado |
+| CLI de preview en imagen sin red | --help correcto, sin llamar al proveedor |
+| Adopción PowerShell | Simulada con credenciales y Docker ficticios; origen preservado y rechazo sin volumen |
+| Compose | Configuración simulada preserva proyecto/volumen externo, réplica y flag apagado |
+
+Se añaden 31 casos en test_openrouter.py: solicitud única, proveedor/modelo,
+BYOK, parámetros, JSON Schema, errores HTTP/timeout/red/redirect sin reintentos,
+salida truncada, rechazo del modelo, JSON y campos manipulados, cantidad y tokens,
+metadata opcional y modelo configurable. La integración del preview comprueba
+la plantilla realmente leída desde MongoDB y ausencia de publicaciones. Otra prueba
+comprueba que una clave no activa el worker y que Vue recibe el estado desactivado.
+La factoría habilitada explícitamente se prueba con transporte simulado.
+
+Los errores iniciales de longitud de línea se resolvieron antes de los resultados
+finales. Se corrigió también el lector PowerShell para conservar nombres de
+variables al procesar valores entrecomillados; el ensayo incluye ese caso.
+Solo persiste la advertencia conocida de Starlette/TestClient.
+El XML de cobertura resuelve dieciséis módulos de backend/app; no incluye los
+scripts de administración en su denominador.
+
+### Archivos y documentación
+
+Nuevos: app/openrouter.py; backend/scripts/preview_openrouter.py y data_snapshot.py;
+tests/test_openrouter.py; scripts/Use-Phase3Environment.ps1 y Test-Phase3Environment.ps1.
+Modificados: config.py, generation.py, main.py y preparación del worker; flag de
+estado en PracticeView.vue y su prueba; requirements; Compose y .env.example.
+Se amplía COPIA_RESTAURACION.md con comandos exactos. Se registran ADR-011,
+seguimiento y este devlog. Los ADR y seguimiento siguen ignorados por las reglas
+actuales del autor. No se modifica README ni configuración/historial Git.
+Se conservan los cambios no confirmados de la reposición del día anterior.
+
+### Pendientes y límites
+
+El autor debe introducir su clave OpenRouter en .env, configurar BYOK sin
+capacidad compartida, adoptar el entorno, comparar inventarios y verificar
+login/intentos. Después ejecutará una única llamada real y revisará las preguntas.
+La conectividad, soporte de parámetros del endpoint real, consumo y calidad
+lingüística no quedan demostrados por simulación. No se han publicado preguntas
+ni consumido saldo. Mantener BANK_REFILL_ENABLED=false durante esta revisión.
+No se implementan feedback, tests preparados ni publicación del lote revisado.
+No se han realizado operaciones Git de escritura ni validaciones remotas de CI.
+
+## 2026-11-18 — CA de confianza en ejecución para OpenRouter
+
+### Causa y ajuste acotado
+
+La petición pública a /api/v1/models fallaba dentro del backend con
+CERTIFICATE_VERIFY_FAILED. El Dockerfile solo montaba pip_ca_bundle durante el
+RUN de pip: ese secreto de construcción no estaba disponible en ejecución.
+Además, HTTPX con trust_env=False no adopta SSL_CERT_FILE automáticamente.
+
+Se conserva el Dockerfile y se amplía el overlay local .tools/compose.ca.yml:
+montaje de solo lectura del mismo bundle en /run/secrets/pip_ca_bundle y variable
+SSL_CERT_FILE. openrouter.py pasa explícitamente ssl.create_default_context() a
+HTTPX, conservando trust_env=False, CERT_REQUIRED y verificación del hostname.
+No se incorpora la CA a la imagen ni se desactiva TLS. No hay dependencias nuevas.
+El .env privado activa ambos archivos mediante
+COMPOSE_FILE=docker-compose.yml;.tools/compose.ca.yml (separador Windows).
+Se conserva una copia privada del .env anterior en .tools; no se cambian claves,
+volumen, base ni BANK_REFILL_ENABLED=false.
+
+### Comprobaciones efectivamente ejecutadas
+
+- Reproducción inicial desde el backend: CA ausente en runtime y error de emisor
+  local con urllib; sin autenticación ni generación.
+- 30 pruebas unitarias del adaptador aprobadas; 3 de integración excluidas.
+  Ejecución sin red. Dos regresiones nuevas verifican el contexto SSL seguro y
+  su uso explícito por HTTPX con trust_env=False. Advertencia conocida de
+  Starlette/TestClient; no se repiten las suites completas ni la cobertura global.
+- Ruff y formato correctos en los tres archivos Python afectados.
+- Reconstrucción y recreación únicamente del backend con --no-deps --build --wait.
+- Nuevo diagnóstico scripts.check_openrouter_tls: urllib HTTP 200, HTTPX HTTP 200,
+  478 modelos en ese momento, verificación TLS/hostname activas y sin Authorization.
+  No se instancia el proveedor ni se utiliza la clave; no hay llamadas de generación.
+- data_snapshot antes/después: misma base, replica set, documentos e índices de
+  todas las colecciones. MongoDB conserva identificador de contenedor y volumen.
+- Backend saludable, CA montada de solo lectura y BANK_REFILL_ENABLED=false.
+
+### Reproducción y límites
+
+Desde PowerShell, en la raíz: docker compose exec -T backend python -m
+scripts.check_openrouter_tls. El comando solo consulta el catálogo público usando
+el mismo contexto TLS que el adaptador; no demuestra todavía generación ni BYOK.
+El overlay, bundle, copias e .env son archivos privados ignorados por Git.
+No se modifica README ni se realizan operaciones Git de escritura.
+## 2026-11-18 — Adaptador Anthropic directo para previsualización
+
+### Objetivo y alcance
+
+Tras comunicar el autor HTTP 402 en OpenRouter, añadir una alternativa directa
+para el primer ensayo de cinco preguntas. No se atribuye la causa del 402 sin
+más evidencia. Se conservan OpenRouter y la solución TLS; no se ejecutan llamadas
+reales ni se publican preguntas. BANK_REFILL_ENABLED permanece false en .env y
+en la configuración Compose comprobada. El .env local no se modifica en esta tarea.
+
+### Implementación y decisiones
+
+- app/anthropic.py implementa estructuralmente GenerationProvider usando HTTPX
+  existente: endpoint fijo /v1/messages, x-api-key, versión 2023-06-01, modelo
+  configurable (por defecto claude-haiku-4-5-20251001), salida JSON estructurada.
+- Se reutiliza el contexto TLS de openrouter.py, con CA de ejecución, comprobación
+  del certificado/hostname y trust_env=False. Sin redirects, reintentos ni fallback.
+- El JSON Schema actual incluye longitudes y cardinalidades no admitidas por el
+  servicio. Se eliminan solo esas restricciones del esquema enviado, trasladándolas
+  a descripciones; la respuesta se valida siempre con el contrato original completo.
+  No se modifica GenerationOutput ni la plantilla persistida.
+- Settings y Compose incorporan ANTHROPIC_API_KEY (SecretStr), ANTHROPIC_MODEL y
+  ANTHROPIC_MAX_TOKENS. .env.example solo contiene un campo de clave vacío.
+- El comando existente preview_openrouter añade --proveedor anthropic; OpenRouter
+  sigue siendo el valor predeterminado. Conserva la lectura del prompt/ficha/banco,
+  el informe y la prohibición de escribir. No se modifica la selección automática
+  del worker; Anthropic queda accesible únicamente por ensayo manual o inyección.
+- Métricas: modelo, tokens y msg id (request-id como alternativa). Coste y bandera
+  BYOK quedan desconocidos/null; API directa no implica BYOK de OpenRouter.
+- Errores HTTP, conexión y validación usan mensajes controlados sin cuerpos o claves.
+
+### Evidencia ejecutada
+
+- Suite backend completa: 277 aprobadas en 54,34 s, MongoDB replica set exclusivo
+  con tmpfs y red independientes; todas las respuestas de proveedores simuladas.
+- 23 casos nuevos de Anthropic: selección CLI, cabeceras/modelo/TLS, petición única,
+  errores HTTP/red sin reintentos, truncamiento/rechazo, esquema adaptado sin mutar,
+  validación original (cantidad, metadatos, distractores, longitud, tokens), clave
+  ausente y modelo configurable. La integración comprueba prompt v2 y hashes de
+  documentos e índices antes/después idénticos, sin publicación.
+- Cobertura backend/app: 1248/1292 = 96,59 % de líneas (no ramas); adaptador 56/58.
+  Sin cubrir en el adaptador las respuestas sobredimensionadas y envoltorio inesperado.
+- Ruff y formato correctos, 32 archivos Python. Ayuda CLI comprobada sin red.
+- Imagen backend construida correctamente; Compose conserva volumen externo de
+  fase 3, overlay TLS y reposición apagada. No se recrea el backend de desarrollo
+  ni se escribe en su base; la adopción con la nueva clave la realizará el autor.
+- Advertencia conocida de Starlette/TestClient; no se ejecutan pruebas frontend
+  porque no hay cambios Vue. No se han validado CI remoto ni el servicio real.
+
+### Documentación y revisión manual
+
+Se amplía COPIA_RESTAURACION.md con las variables locales y el comando exacto;
+se actualizan seguimiento y la decisión existente ADR-011, sin crear otro ADR.
+El autor introduce su clave en .env, recrea solo backend y ejecuta una sola
+previsualización de cinco preguntas antes de decidir cualquier publicación.
+README y operaciones Git de escritura excluidos; cambios anteriores conservados.
+## 2026-11-18 — Duplicados coherentes entre preview y reposición
+
+### Diagnóstico
+
+La reposición ya excluía preguntas existentes por enunciado normalizado dentro
+del banco antes de publicar. El preview solo validaba el contrato del lote y
+mostraba todas las preguntas como revisables; no consultaba duplicados del banco.
+Por tanto, cambiar distractores no debía permitir publicación automática, pero
+sí hacía que el ensayo manual mostrase duplicadas como si fueran candidatas.
+
+El prompt v2 no recibe ejemplos consultados de BancoEjercicios ni una lista de
+exclusión. prepare_generation_context solo incorpora parámetros y ficha educativa.
+La ficha contiene ejemplos revisados, tres coincidentes literalmente con el seed.
+La plantilla los presenta como contexto, exige diversidad y prohíbe copiar su
+propio ejemplo de formato JSON; no separa dinámicamente referencias y enunciados
+existentes a evitar. Este límite explica la posibilidad de repetir material.
+No se modifica el texto v2 persistido, el seed ni el contrato/versionado de prompts.
+
+### Ajuste implementado
+
+- generation.py concentra sentence_key y filter_bank_duplicates, solo lectura.
+  Normalización: split/join de espacios (incluye exteriores, repetidos y saltos)
+  y casefold. Identidad por enunciado en el mismo banco; no por distractores,
+  respuestas o metadatos. No se eliminan puntuación, palabras ni sinónimos.
+- preview_openrouter usa el filtro después de validar el lote. Informa
+  preguntas_recibidas, preguntas_descartadas_duplicadas y preguntas_candidatas;
+  preguntas contiene solo las candidatas. Puede devolver cero sin error ni una
+  segunda llamada. El selector de proveedor y las métricas se conservan.
+- replenishment usa exactamente el mismo filtro dentro de su sesión/transacción
+  de publicación, manteniendo lease, fencing, secuencia y manejo de lote sin
+  preguntas nuevas. El snapshot del preview no sustituye esta comprobación final.
+- No se agregan índices, campos persistidos, dependencias ni llamadas externas.
+  BANK_REFILL_ENABLED=false verificado en Compose y en el backend en ejecución.
+
+### Validación efectiva
+
+Suite completa backend con MongoDB replica set aislado: 283 aprobadas en 54,95 s.
+Cobertura de líneas backend/app: 1250/1294 = 96,60 %; no cobertura de ramas.
+Ruff y formato: correctos en 33 archivos Python. Advertencia conocida de
+Starlette/TestClient. Sin cambios frontend ni ejecución de sus pruebas.
+
+Seis casos nuevos: normalización de mayúsculas/espacios/tabulaciones/saltos/
+espacio no separable; preview de cinco preguntas con 5, 2 y 0 duplicadas.
+El caso 5 usa enunciados existentes con dos distractores distintos y produce
+5 recibidas, 5 descartadas, 0 candidatas y lista vacía. Cada ensayo hace una
+petición simulada y compara inventario completo de documentos/índices antes y
+después, sin cambios. Los casos parciales comprueban que la presencia en otro
+banco no descarta una candidata del banco actual. Las regresiones existentes
+del worker confirman descarte total y parcial, secuencias y atomicidad.
+
+Se retira únicamente el proyecto efímero trainer-duplicates-tests y su red;
+no se modifica la base ni volumen de desarrollo. No hay llamadas reales a ningún
+proveedor, publicaciones, modificaciones de .env ni operaciones Git de escritura.
+
+### Archivos y límites
+
+Modificados generation.py, replenishment.py y preview_openrouter.py; añadido
+backend/tests/test_preview_duplicates.py. Actualizados COPIA_RESTAURACION.md,
+este devlog y seguimiento. README y prompts intactos.
+El filtro detecta igualdad textual normalizada, no paráfrasis ni equivalencia
+semántica. Proporcionar una lista de exclusión al LLM requerirá una evolución
+explícita/versionada del contexto; no se incluye silenciosamente en este ajuste.
+## 2026-11-18 — Prompt v3 y lotes completos con rondas acotadas
+
+### Diagnóstico verificable
+
+El autor comunica dos ensayos reales con cinco preguntas, todas ya existentes.
+La aplicación de preview no conserva el prompt exacto de esas llamadas; no se
+atribuye a reconstrucciones la condición de registro histórico. Se leyó de forma
+exclusivamente consultiva el banco de desarrollo Present Simple A1 (diez preguntas),
+la plantilla v2 persistida y la ficha/configuración actual. Se reconstruyó un prompt
+para cantidad cinco y modelo claude-haiku-4-5-20251001, guardado localmente en
+.tools/prompt-v2-reconstruido.txt (ignorado, sin secretos). Esto no prueba identidad
+con las solicitudes originales ni conserva sus parámetros internos del proveedor.
+
+Tres enunciados del banco aparecen literalmente en la ficha recibida por v2:
+I ___ (play) football every Saturday.; She ___ (watch) TV after dinner every day.;
+He ___ (go) to school by bus every morning. Los otros siete no aparecen allí.
+V2 no consulta el banco para preparar exclusiones; sus reglas de variedad y ejemplos
+no garantizan novedad. No se han realizado llamadas nuevas para este diagnóstico.
+
+### Implementación y decisiones
+
+- generacion_banco.v3.txt mantiene restricciones pedagógicas/salida de v2, añadiendo
+  secciones explícitas ejemplos_pedagogicos y enunciados_excluidos. La exclusión es
+  por enunciado, no por soluciones o distractores; sus datos no son instrucciones.
+- prompts.py compone v3 extrayendo ejemplos revisados de la ficha y eliminando
+  líneas coincidentes con exclusiones del contexto pedagógico. Los diez enunciados
+  actuales del banco se incluyen en la lista; se añaden candidatas de rondas previas.
+  La ficha original, hash y versiones 1/2 se conservan. No hay plantilla alternativa
+  en lógica de negocio: el texto sigue leyéndose de Prompts.
+- Seed idempotente prepara v3 inactiva; v2 sigue siendo la versión activa por defecto.
+  scripts/activate_generation_prompt.py usa el mismo origen del seed y una transacción
+  para insertar la versión ausente y cambiar a una única activa. Puede volver a v2.
+  Solo se ejecuta contra bases aisladas en las pruebas; desarrollo no se activa.
+- collect_generation_batch comparte preparación, filtrado y acumulación entre preview
+  y worker. Pide solo pendientes, conserva candidatas durante las rondas y suma tokens.
+  Una respuesta que incumple el contrato sigue rechazándose; validación estructural
+  no equivale a revisión lingüística. La corrección determinista no se modifica.
+- BANK_GENERATION_MAX_ROUNDS: predeterminado tres, rango uno a cinco. En el worker,
+  rondas_consumidas se incrementa atómicamente antes de la llamada bajo el token/lease
+  vigente. El contador durable incluye llamadas fallidas y no se reinicia al reintentar
+  el mismo trabajo; documentos anteriores sin campo se interpretan como cero.
+- El proveedor permanece fuera de transacciones. El timeout existente limita el conjunto
+  de rondas de cada intento de ejecución, manteniendo la validez del lease.
+- La publicación vuelve a consultar duplicados y exige exactamente la cantidad del
+  trabajo. Una colisión tardía o agotamiento devuelve error sin insertar parcialmente
+  preguntas ni avanzar publicado_hasta/progreso. Se registra la cantidad de candidatas
+  válidas logradas en ultima_generacion; no se confunde con preguntas publicadas.
+- Preview mantiene diagnóstico de una llamada y añade --modo lote. Informa candidatas
+  y duplicadas de primera ronda, recibidas/duplicadas totales, candidatas finales,
+  número de llamadas, detalle por ronda y tokens acumulados. Si es incompleto devuelve
+  lote_incompleto_sin_publicar, junto con las candidatas; nunca publica ni rellena
+  silenciosamente por encima del límite.
+
+### Pruebas realmente ejecutadas
+
+- Ejecución final: 293 pruebas backend aprobadas en 59,47 s, MongoDB replica set
+  exclusivo con tmpfs y red independiente. Diez nuevos casos en test_generation_batches.
+- Simulados: exclusión de los diez enunciados y separación pedagógica v3; activación
+  y seed repetidos conservando v2/v3; 30 → 28 + 2; 5 → 0 + 5; diagnóstico de una llamada;
+  agotamiento con cuatro candidatas y cero publicación; worker publica cinco o ninguna;
+  contador durable entre fallos del proveedor; duplicado concurrente antes de publicación.
+- Se adaptan expectativas antiguas: cuatro prompts (v2 activa/v3 inactiva), versión
+  desconocida ahora cuatro y publicación previa de 29 ahora exige completar hasta 30.
+- La primera ejecución detectó una expectativa antigua de tres prompts en test_auth;
+  se actualizó a cuatro y se repitió la suite completa, sin fallos finales.
+- Cobertura backend/app: 1317/1364 = 96,55 % de líneas, no ramas. XML generado.
+  Los scripts administrativos no forman parte de ese denominador.
+- Ruff y formato correctos, 35 archivos Python; imagen backend construida y ayuda de
+  ambos comandos comprobada sin red. Compose conserva false, CA y volumen de fase 3.
+- Advertencia conocida de Starlette/TestClient. Sin cambios Vue; no se repite frontend.
+
+### Límites y entrega
+
+Las candidatas se conservan en memoria durante el lote, sin recuperación tras caída.
+Un fallo del proveedor o contenido inválido aborta la ejecución conservadora; los
+reintentos siguen sujetos al contador durable. La novedad es comparación normalizada
+textual, no semántica. La lista de exclusión crecerá con el banco y puede aumentar
+los tokens; el MVP usa su banco pequeño completo. No se consumen créditos en pruebas.
+Se conservan los adaptadores, TLS, base y volumen de desarrollo, con
+BANK_REFILL_ENABLED=false. Solo se consulta desarrollo para reconstruir v2.
+Instrucciones manuales de activación/previsualización en COPIA_RESTAURACION.md.
+Se actualizan seguimiento y ADR-011 existente; sin ADR nuevo, README ni Git de escritura.
+## 2026-11-19 — Diagnóstico de errores Anthropic sin perder metadatos
+
+### Problema observado y causa comprobada
+
+El autor comunica éxito con cinco preguntas y fallo de contrato con treinta.
+En AnthropicProvider.generate el except conjunto de KeyError/ValueError/etc.
+incluía tanto JSON inválido como Pydantic, modelo y stop_reason; sustituía todos
+los detalles por el mismo mensaje. La CLI solo imprimía str(error). No existe
+información conservada que permita atribuir el fallo pasado a truncamiento,
+cantidad o una regla concreta. No se ha repetido ninguna llamada real.
+
+### Implementación
+
+- AnthropicError conserva un diagnóstico estructurado y mantiene str(error)
+  controlado. Se extraen metadatos antes de validar la respuesta: modelo, msg id
+  (request-id como alternativa), stop_reason, tokens válidos y número de preguntas
+  si el JSON pudo leerse. Campos desconocidos permanecen null.
+- Se separan errores de sobre/tamaño, modelo, finalización, bloque textual, JSON,
+  contrato Pydantic, cantidad y metadatos. Pydantic aporta ruta/tipo/mensaje con
+  include_input=False, include_context=False e include_url=False. Las reglas de
+  validadores de pregunta y lote se conservan, sin imprimir valores rechazados.
+- GenerationRequest añade ronda interna con valor predeterminado uno; el colector
+  la asigna a cada llamada. No cambia API pública, esquema de salida ni persistencia.
+- La CLI muestra el diagnóstico y termina con código 1 cuando hay error. En lote,
+  la ronda identifica la llamada fallida. Los tokens del error son los de esa
+  llamada; los informes exitosos mantienen la suma ya existente.
+- --guardar-texto habilita exclusivamente en CLI Anthropic un callback para escribir
+  solo el texto devuelto en .tools, con nombres UUID y sin sobrescritura. Redacta
+  cualquier aparición de la clave Anthropic configurada. No se guardan petición,
+  sobre HTTP ni cabeceras. El adaptador/worker habituales no activan capturas.
+- La captura ocurre antes de rechazar el contenido, también en max_tokens o JSON
+  inválido. Un fallo de escritura genera aviso sin ocultar el fallo del contrato.
+  La protección de tamaño y todas las validaciones, TLS y no publicación permanecen.
+
+### Evidencia ejecutada
+
+- Suite backend completa: 306 pruebas aprobadas en 66,74 s, con MongoDB replica set
+  aislado y respuestas simuladas. Trece casos nuevos en test_anthropic.py.
+- Casos: cantidad incorrecta; huecos/longitud; duplicación dentro del lote; JSON
+  inválido; max_tokens con JSON válido o truncado; tokens de tipo inválido; texto
+  guardado en éxito y error con redacción de clave y exclusión de cabeceras;
+  fallo de escritura sin perder validación; pregunta 18 inválida en respuesta de
+  treinta; CLI fallida en segunda ronda con comparación completa de documentos
+  e índices antes/después, sin cambios.
+- Cobertura backend/app: 1370/1422 = 96,34 % de líneas, sin ramas. XML generado.
+  Scripts administrativos excluidos del denominador como en las ejecuciones previas.
+- Ruff/formato correctos, 35 archivos Python. Imagen backend construida; ayuda CLI
+  comprobada sin red. Persistió únicamente la advertencia conocida Starlette/TestClient.
+- Comprobado desde PowerShell el bind mount del comando recomendado: un contenedor
+  temporal escribe texto sintético de ronda cero en .tools/diagnosticos, sin acceder
+  al proveedor ni a MongoDB. No se han usado claves ni consumido saldo para probar.
+- BANK_REFILL_ENABLED=false comprobado en Compose y backend habitual. Volumen de
+  fase 3 y CA conservados. No se modifica .env, prompt activo, base o infraestructura.
+
+### Archivos y alcance
+
+Modificados backend/app/anthropic.py, app/generation.py,
+scripts/preview_openrouter.py y tests/test_anthropic.py. Actualizados
+COPIA_RESTAURACION.md, este devlog y seguimiento. No son necesarias dependencias
+ni un ADR nuevo. Sin cambios frontend, README ni operaciones Git de escritura.
+El autor debe repetir el ensayo de treinta para conocer el motivo real. Los
+archivos de diagnóstico siguen ignorados por Git. El comando con run --rm y bind
+mount evita perder el texto al retirar el contenedor temporal.

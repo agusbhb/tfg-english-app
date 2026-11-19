@@ -1,7 +1,11 @@
+name: ${COMPOSE_PROJECT_NAME:-trainer}
 services:
   mongodb:
     image: mongo:8.0.15
+    entrypoint: [bash, /opt/trainer/mongo-replica.sh]
     environment:
+      MONGO_REPLICA_SET: trainer-local
+      MONGO_REPLICA_HOST: mongodb:27017
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?Configura MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Configura MONGO_ROOT_PASSWORD}
       MONGODB_DB: ${MONGODB_DB:-trainer}
@@ -10,8 +14,10 @@ services:
     volumes:
       - mongodb_data:/data/db
       - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/01-app-user.js:ro
+      - ./docker/mongo-replica.sh:/opt/trainer/mongo-replica.sh:ro
+      - ./docker/mongo-replica-health.js:/opt/trainer/mongo-replica-health.js:ro
     healthcheck:
-      test: [CMD, mongosh, --quiet, --eval, "db.adminCommand({ping: 1}).ok === 1 ? quit(0) : quit(1)"]
+      test: [CMD, mongosh, --quiet, /opt/trainer/mongo-replica-health.js]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -20,11 +26,21 @@ services:
   backend:
     build: ./backend
     environment:
-      MONGODB_URI: mongodb://${MONGO_APP_USER:?Configura MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Configura MONGO_APP_PASSWORD}@mongodb:27017/${MONGODB_DB:-trainer}?authSource=${MONGODB_DB:-trainer}
+      MONGODB_URI: mongodb://${MONGO_APP_USER:?Configura MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Configura MONGO_APP_PASSWORD}@mongodb:27017/${MONGODB_DB:-trainer}?authSource=${MONGODB_DB:-trainer}&replicaSet=trainer-local
       MONGODB_DB: ${MONGODB_DB:-trainer}
       JWT_SECRET: ${JWT_SECRET:?Genera JWT_SECRET}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}
+      BANK_REFILL_THRESHOLD: ${BANK_REFILL_THRESHOLD:-20}
+      BANK_REFILL_BATCH_SIZE: ${BANK_REFILL_BATCH_SIZE:-30}
+      BANK_REFILL_ENABLED: ${BANK_REFILL_ENABLED:-false}
+      BANK_GENERATION_MAX_ROUNDS: ${BANK_GENERATION_MAX_ROUNDS:-3}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-haiku-4.5}
+      OPENROUTER_MAX_COMPLETION_TOKENS: ${OPENROUTER_MAX_COMPLETION_TOKENS:-4096}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      ANTHROPIC_MAX_TOKENS: ${ANTHROPIC_MAX_TOKENS:-4096}
     ports:
       - 127.0.0.1:8000:8000
     depends_on:
@@ -60,3 +76,5 @@ services:
 
 volumes:
   mongodb_data:
+    name: ${MONGODB_VOLUME_NAME:?Ejecuta scripts/Use-Phase3Environment.ps1 para conservar el volumen de fase 3}
+    external: ${MONGODB_VOLUME_EXTERNAL:-true}

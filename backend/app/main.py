@@ -14,6 +14,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 from app import practice
 from app.config import Settings
 from app.database import create_client, initialize_database
+from app.generation import GenerationProvider
 from app.models import (
     AcademicProfile,
     SubjectDocument,
@@ -21,6 +22,9 @@ from app.models import (
     validate_academic_reference,
     validate_catalog,
 )
+from app.openrouter import OpenRouterProvider
+from app.replenishment import BankRefiller
+from app.reservations import BankExhausted
 from app.schemas import (
     AnswerInput,
     CreateTestRequest,
@@ -68,17 +72,25 @@ async def current_user(
     return public_user(user)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, generation_provider: GenerationProvider | None = None
+) -> FastAPI:
     settings = settings or Settings()
+    if generation_provider is None and settings.bank_refill_enabled and settings.openrouter_api_key:
+        generation_provider = OpenRouterProvider(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         client = create_client(settings)
         app.state.database = client[settings.mongodb_db]
+        refiller = None
         try:
             await client.admin.command("ping")
             await initialize_database(app.state.database)
             app.state.dummy_hash = await dummy_password_hash()
+            refiller = BankRefiller(app.state.database, settings, generation_provider)
+            app.state.refiller = refiller
+            refiller.start()
             yield
         except PyMongoError:
             # No incluir el error original: puede contener datos de conexión.
@@ -86,6 +98,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "MongoDB no está disponible; revisa la configuración y el servicio"
             ) from None
         finally:
+            if refiller is not None:
+                await refiller.stop()
             await client.close()
 
     app = FastAPI(title="TrAIner", version="0.1.0", lifespan=lifespan)
@@ -180,9 +194,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def new_test(
         payload: CreateTestRequest, request: Request, user: UserResponse = Depends(current_user)
     ):
-        return practice.public_test(
-            await practice.create_test(request.app.state.database, user, payload.tema_id)
-        )
+        try:
+            test = await practice.create_test(request.app.state.database, user, payload.tema_id)
+        except BankExhausted as error:
+            code, message = await request.app.state.refiller.exhausted_status(
+                error.bank_id, error.cursor
+            )
+            return JSONResponse(status_code=409, content={"detail": message, "codigo": code})
+        await request.app.state.refiller.after_reservation(test)
+        return practice.public_test(test)
 
     @app.get("/tests/pendiente", response_model=PublicTest | None, tags=["Práctica"])
     async def get_pending(

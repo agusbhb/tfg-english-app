@@ -85,6 +85,89 @@ async function open(path) {
   wrapper = mount(App, { global: { plugins: [router] } })
   await flushPromises()
 }
+it.each([true, false])(
+  'explica la reposición en curso y ofrece otro tema solo si existe: %s',
+  async (alternatives) => {
+    if (alternatives) {
+      api.subjects.mockResolvedValue([
+        {
+          id: 'subject',
+          niveles: [
+            {
+              nivel_id: 'level',
+              temas: [
+                { tema_id: 'topic', nombre: 'Present Simple' },
+                { tema_id: 'other-topic', nombre: 'Otro tema' },
+              ],
+            },
+          ],
+        },
+      ])
+    }
+    api.createTest.mockRejectedValueOnce(
+      new ApiError(
+        'Estamos preparando más preguntas para este tema',
+        409,
+        'banco_reponiendo',
+      ),
+    )
+    await open('/practicar')
+    await wrapper.get('#topic').setValue('topic')
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain(
+      'Estamos preparando más preguntas para este tema',
+    )
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.text().includes('Practicar otro tema')).toBe(alternatives)
+    expect(api.pendingTest).toHaveBeenCalledTimes(1)
+    const buttons = wrapper.findAll('button')
+    if (alternatives) {
+      await buttons
+        .find((button) => button.text() === 'Practicar otro tema')
+        .trigger('click')
+      await flushPromises()
+      expect(wrapper.get('#topic').element.value).toBe('')
+      expect(wrapper.text()).not.toContain(
+        'Estamos preparando más preguntas para este tema',
+      )
+      expect(api.createTest).toHaveBeenCalledTimes(1)
+    } else {
+      await buttons
+        .find((button) => button.text() === 'Comprobar disponibilidad')
+        .trigger('click')
+      await flushPromises()
+      expect(api.createTest).toHaveBeenCalledTimes(2)
+      expect(router.currentRoute.value.path).toBe('/tests/attempt')
+    }
+    expect(auth.state.authenticated).toBe(true)
+  },
+)
+it.each([
+  [
+    'proveedor_no_configurado',
+    'La reposición no está disponible porque no hay un proveedor configurado.',
+  ],
+  [
+    'reposicion_fallida',
+    'No se han podido preparar más preguntas para este tema.',
+  ],
+  [
+    'reposicion_desactivada',
+    'La reposición automática está desactivada para el ensayo manual.',
+  ],
+])('distingue %s de una reposición activa', async (code, message) => {
+  api.createTest.mockRejectedValue(new ApiError(message, 409, code))
+  await open('/practicar')
+  await wrapper.get('#topic').setValue('topic')
+  await flushPromises()
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.get('[role="alert"]').text()).toBe(message)
+  expect(wrapper.text()).not.toContain('Estamos preparando más preguntas')
+  expect(auth.state.authenticated).toBe(true)
+})
 it('conserva el aviso de banco agotado cuando no existe un pendiente', async () => {
   const message = 'Has agotado las preguntas publicadas de este banco'
   api.createTest.mockRejectedValue(new ApiError(message, 409))

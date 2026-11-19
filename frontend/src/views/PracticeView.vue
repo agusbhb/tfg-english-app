@@ -10,6 +10,8 @@ const selected = ref('')
 const loading = ref(false)
 const starting = ref(false)
 const error = ref('')
+const preparing = ref(false)
+const bankUnavailable = ref(false)
 const pending = ref(null)
 const checking = ref(false)
 const checked = ref(false)
@@ -21,6 +23,8 @@ async function checkPending() {
   pending.value = null
   checked.value = false
   error.value = ''
+  preparing.value = false
+  bankUnavailable.value = false
   if (!selected.value) {
     checking.value = false
     return
@@ -70,14 +74,27 @@ async function start() {
     return
   starting.value = true
   error.value = ''
+  preparing.value = false
+  bankUnavailable.value = false
   try {
     const test = await auth.authenticated((token) =>
       api.createTest({ tema_id: selected.value }, token),
     )
     await router.push({ name: 'test', params: { id: test.id } })
   } catch (cause) {
+    if (cause.code === 'banco_reponiendo') {
+      preparing.value = true
+      bankUnavailable.value = true
+      return
+    }
     error.value = cause.message
-    if (cause.status === 409) {
+    bankUnavailable.value = [
+      'reposicion_fallida',
+      'reposicion_desactivada',
+      'proveedor_no_configurado',
+      'banco_agotado',
+    ].includes(cause.code)
+    if (cause.status === 409 && !cause.code) {
       await checkPending()
       if (!pending.value) error.value = cause.message
     }
@@ -115,12 +132,33 @@ onMounted(load)
     <p>Elige un tema de tu curso. Prepararemos hasta diez preguntas.</p>
     <p v-if="loading" role="status">Cargando temas…</p>
     <p v-if="error" role="alert" class="message error">{{ error }}</p>
+    <template v-if="preparing">
+      <p role="status">Estamos preparando más preguntas para este tema</p>
+      <button
+        type="button"
+        class="text-button"
+        :disabled="starting"
+        @click="start"
+      >
+        Comprobar disponibilidad
+      </button>
+    </template>
+    <button
+      v-if="
+        bankUnavailable && topics.some((topic) => topic.tema_id !== selected)
+      "
+      type="button"
+      class="text-button"
+      @click="selected = ''"
+    >
+      Practicar otro tema
+    </button>
     <button
       v-if="error && !starting"
       class="text-button"
-      @click="selected ? checkPending() : load()"
+      @click="bankUnavailable ? start() : selected ? checkPending() : load()"
     >
-      Volver a intentar
+      {{ bankUnavailable ? 'Comprobar disponibilidad' : 'Volver a intentar' }}
     </button>
     <p v-if="!loading && !error && !topics.length">
       Todavía no hay temas disponibles para tu curso.
@@ -162,7 +200,7 @@ onMounted(load)
         </button>
       </template>
       <button
-        v-else
+        v-else-if="!preparing"
         type="submit"
         class="primary-button"
         :disabled="starting || checking || !checked || !selected"

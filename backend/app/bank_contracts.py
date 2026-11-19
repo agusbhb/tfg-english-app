@@ -127,6 +127,25 @@ class GenerationMetrics(GenerationReference):
         return self
 
 
+class BankRefillJob(Model):
+    generacion_id: MongoId
+    estado: Literal["pendiente", "en_curso", "error", "completada"] = "pendiente"
+    cantidad: Annotated[int, Field(ge=1, le=50, strict=True)]
+    intentos: Counter = 0
+    rondas_consumidas: Counter = 0
+    creado_en: UTCDate
+    token: MongoId | None = None
+    lease_hasta: UTCDate | None = None
+    reintento_en: UTCDate | None = None
+    error_codigo: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]*$", max_length=64)
+
+    @model_validator(mode="after")
+    def running_requires_lease(self) -> Self:
+        if self.estado == "en_curso" and (self.token is None or self.lease_hasta is None):
+            raise ValueError("Una reposición en curso requiere token y vencimiento")
+        return self
+
+
 class BankMetadataDocument(Document):
     tema_id: MongoId
     codigo_tema: TopicCode
@@ -134,6 +153,7 @@ class BankMetadataDocument(Document):
     ficha: ContentReference
     publicado_hasta: Counter = 0
     ultima_generacion: GenerationMetrics | None = None
+    reposicion: BankRefillJob | None = None
 
     @model_validator(mode="after")
     def matching_content(self) -> Self:
@@ -156,7 +176,8 @@ class AcademicBankBinding(Model):
 
 class QuestionValidation(Model):
     estructural: Literal["validada"]
-    pedagogica: Literal["pendiente", "revisada", "rechazada"]
+    # Automática no equivale a revisión lingüística humana ni habilita multiple_choice.
+    pedagogica: Literal["pendiente", "revisada", "rechazada", "automatica"]
     apta_multiple_choice: StrictBool = False
 
 

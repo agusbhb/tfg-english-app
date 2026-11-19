@@ -2,6 +2,24 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiError, createApiClient } from '../src/api.js'
 
 describe('Contrato HTTP y errores', () => {
+  it('conserva el código de disponibilidad del banco sin tratarlo como error de registro', async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: 'Estamos preparando más preguntas para este tema',
+          codigo: 'banco_reponiendo',
+        }),
+        { status: 409 },
+      ),
+    )
+    await expect(
+      createApiClient(fetch).createTest({ tema_id: 'topic' }, 'token'),
+    ).rejects.toMatchObject({
+      code: 'banco_reponiendo',
+      status: 409,
+      message: 'Estamos preparando más preguntas para este tema',
+    })
+  })
   it('guarda una sola pregunta por PATCH con autenticación', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('{}'))
     await createApiClient(fetch).saveDraft(

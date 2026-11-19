@@ -1,4 +1,5 @@
-# Activación manual: usar junto a docker-compose.yml, tras backup y ensayo en copia.
+# Compatibilidad: el Compose habitual ya incorpora esta configuración de réplica.
+# Para el arranque nuevo basta .env y docker-compose.yml; conservar el proyecto/volumen.
 services:
   mongodb:
     entrypoint: [bash, /opt/trainer/mongo-replica.sh]
