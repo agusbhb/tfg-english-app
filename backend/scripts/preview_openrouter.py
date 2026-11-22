@@ -10,7 +10,7 @@ from bson import ObjectId
 from pymongo.errors import PyMongoError
 
 from app.anthropic import AnthropicError, AnthropicProvider
-from app.bank_contracts import BankMetadataDocument
+from app.bank_contracts import BankMetadataDocument, modality_counts
 from app.config import Settings
 from app.database import create_client
 from app.generation import collect_generation_batch
@@ -80,12 +80,23 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
             "tokens_salida": batch.total("tokens_salida"),
             "prompt_version": batch.trace.prompt_version,
             "preguntas_recibidas": batch.received,
-            "preguntas_descartadas_duplicadas": batch.received - len(batch.questions),
+            "preguntas_descartadas_duplicadas": batch.duplicate_count,
+            "preguntas_rechazadas_contrato": batch.rejected,
+            "rechazos_contrato": [
+                {"ronda": index + 1, **rejection}
+                for index, round_ in enumerate(batch.rounds)
+                for rejection in round_["rechazos_contrato"]
+            ],
+            "preguntas_descartadas_cuota": sum(r["descartadas_cuota"] for r in batch.rounds),
             "preguntas_candidatas": len(batch.questions),
             "candidatas_primera_ronda": batch.rounds[0]["candidatas_acumuladas"],
             "duplicadas_primera_ronda": batch.rounds[0]["duplicadas"],
             "numero_llamadas": len(batch.responses),
             "lote_completo": batch.complete,
+            "distribucion_objetivo": batch.distribution,
+            "distribucion_final": modality_counts(batch.questions)
+            if batch.trace.prompt_version >= 4
+            else None,
             "rondas": batch.rounds,
             "preguntas": [question.model_dump() for question in batch.questions],
         }

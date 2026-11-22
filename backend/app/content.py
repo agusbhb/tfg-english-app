@@ -10,6 +10,7 @@ from app.models import Model
 
 CONTENT_ROOT = Path(__file__).resolve().parent.parent / "content"
 SHEETS = {("present-simple", "A1", 1): "ingles/present-simple/A1/v1.md"}
+SHEETS[("present-simple", "A1", 2)] = "ingles/present-simple/A1/v2.md"
 
 
 class EducationalSheet(Model):

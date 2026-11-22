@@ -30,6 +30,31 @@ def meaningful(value: str) -> str:
 
 
 AnswerText = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(meaningful)]
+Modality = Literal["afirmativa", "negativa", "interrogativa"]
+MODALITIES = ("afirmativa", "negativa", "interrogativa")
+MODALITY_WEIGHTS = {("present-simple", "A1"): (70, 20, 10)}
+
+
+def modality_distribution(quantity, codigo_tema, nivel_mcer):
+    """Política explícita por tema/nivel; sin proporción universal de respaldo."""
+    weights = MODALITY_WEIGHTS.get((codigo_tema, nivel_mcer))
+    if weights is None:
+        raise ValueError("No hay distribución de modalidades configurada para ese tema y nivel")
+    if (
+        len(weights) != 3
+        or any(type(w) is not int or w < 0 for w in weights)
+        or sum(weights) != 100
+    ):
+        raise ValueError("Los pesos de modalidades deben ser tres enteros no negativos y sumar 100")
+    counts = [quantity * weight // 100 for weight in weights]
+    order = sorted(range(3), key=lambda i: (-(quantity * weights[i] % 100), i))
+    for i in order[: quantity - sum(counts)]:
+        counts[i] += 1
+    return dict(zip(MODALITIES, counts, strict=True))
+
+
+def modality_counts(questions):
+    return {mode: sum(q.modalidad == mode for q in questions) for mode in MODALITIES}
 
 
 class ContentKey(Model):
@@ -54,6 +79,7 @@ class BaseBankQuestion(Model):
     respuesta_principal: AnswerText
     solucion: BankSolution
     distractores: list[AnswerText] = Field(default_factory=list, max_length=2)
+    modalidad: Modality | None = None
 
     @model_validator(mode="after")
     def coherent_question(self) -> Self:
@@ -94,6 +120,52 @@ class GenerationOutput(Model):
         return self
 
 
+class ModalBankQuestion(GeneratedBankQuestion):
+    modalidad: Modality
+
+    @model_validator(mode="after")
+    def modality_structure(self):
+        if re.search(
+            r"\b(?:affirmative|negative|interrogative|afirmativa|negativa|interrogativa)\b"
+            r"|[\(\[]\s*(?:question|pregunta)\s*[\)\]]",
+            self.enunciado,
+            re.IGNORECASE,
+        ):
+            raise ValueError("El enunciado no debe contener etiquetas de modalidad")
+        answers = [a.strip().casefold() for a in self.solucion.respuestas_aceptadas]
+        if self.modalidad == "interrogativa":
+            if not re.match(
+                r"^(?:(?:What|Where|When|How often)\s+)?___(?:\s|$)",
+                self.enunciado.lstrip(),
+                re.IGNORECASE,
+            ) or not self.enunciado.rstrip().endswith("?"):
+                raise ValueError(
+                    "La interrogativa requiere hueco auxiliar tras partícula A1 opcional y signo ?"
+                )
+            if any(a not in ("do", "does") for a in answers):
+                raise ValueError("La interrogativa admite solo el auxiliar Do/Does")
+        elif self.modalidad == "negativa":
+            if self.enunciado.rstrip().endswith("?") or any(
+                re.fullmatch(r"(?:do not|does not|don't|doesn't) [a-z]+", a) is None
+                for a in answers
+            ):
+                raise ValueError(
+                    "La negativa requiere auxiliar negativo y verbo base en la solución"
+                )
+            for answer in answers:
+                expanded = answer.replace("doesn't ", "does not ").replace("don't ", "do not ")
+                contracted = expanded.replace("does not ", "doesn't ").replace("do not ", "don't ")
+                if expanded not in answers or contracted not in answers:
+                    raise ValueError("Declarar la variante contraída y la no contraída")
+        elif self.enunciado.rstrip().endswith("?") or any(" " in a or "'" in a for a in answers):
+            raise ValueError("La afirmativa requiere una forma verbal simple")
+        return self
+
+
+class ModalGenerationOutput(GenerationOutput):
+    preguntas: list[ModalBankQuestion] = Field(min_length=1, max_length=50)
+
+
 class GenerationReference(Model):
     generacion_id: MongoId
     modelo: AIModel
@@ -118,6 +190,7 @@ class GenerationMetrics(GenerationReference):
     preguntas_solicitadas: Annotated[int, Field(ge=1, le=50, strict=True)]
     preguntas_recibidas: Counter
     preguntas_validas: Counter
+    preguntas_rechazadas_contrato: Counter = 0
     errores: list[GenerationError] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")

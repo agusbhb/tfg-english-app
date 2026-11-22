@@ -51,6 +51,7 @@ def initial_generation_prompt(version: int = 2) -> PromptDocument:
         1: ("720000000000000000000003", datetime(2026, 11, 5, tzinfo=UTC)),
         2: ("720000000000000000000004", datetime(2026, 11, 14, tzinfo=UTC)),
         3: ("720000000000000000000005", datetime(2026, 11, 18, tzinfo=UTC)),
+        4: ("720000000000000000000006", datetime(2026, 11, 22, tzinfo=UTC)),
     }
     identifier, created = metadata[version]
     source = (
@@ -138,6 +139,7 @@ def initial_documents() -> tuple[
     ]
     prompts.append(initial_generation_prompt())
     prompts.append(initial_generation_prompt(3).model_copy(update={"activo": False}))
+    prompts.append(initial_generation_prompt(4).model_copy(update={"activo": False}))
     validate_academic_reference(subject, LEVEL_ID, bank.tema_id)
     return subject, bank, questions, prompts
 

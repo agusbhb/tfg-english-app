@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.generation import GenerationResponse
 from app.models import AIModel
 from app.openrouter import tls_context
-from app.prompts import validate_generation_output
+from app.prompts import validate_generation_envelope, validate_generation_output
 
 ENDPOINT = "https://api.anthropic.com/v1/messages"
 
@@ -209,13 +209,30 @@ class AnthropicProvider:
                 **json_error,
             )
         try:
-            validated = validate_generation_output(payload, request.parameters)
+            validated_payload = (
+                validate_generation_envelope(payload)
+                if request.validacion_parcial
+                else validate_generation_output(payload, request.parameters).model_dump()
+            )
         except ValidationError as error:
             diagnostic["errores"] = validation_details(error, redact)
             raise AnthropicError(
                 "La respuesta de Anthropic incumple el contrato de generación", diagnostic
             ) from None
         except ValueError:
+            if request.validacion_parcial:
+                fail(
+                    "preguntas",
+                    "estructura_global",
+                    "JSON global no interpretable como lote de preguntas",
+                )
+            if diagnostic["preguntas_recibidas"] == request.parameters.cantidad:
+                fail(
+                    "preguntas.modalidad",
+                    "distribucion_exacta",
+                    "La distribución de modalidades no coincide con la solicitada",
+                    esperadas=request.parameters.distribucion,
+                )
             fail(
                 "preguntas",
                 "cantidad_exacta",
@@ -225,7 +242,7 @@ class AnthropicProvider:
             )
         try:
             return GenerationResponse(
-                payload=validated.model_dump(),
+                payload=validated_payload,
                 tokens_entrada=usage.get("input_tokens"),
                 tokens_salida=usage.get("output_tokens"),
                 id_llamada=data.get("id") or response.headers.get("request-id"),

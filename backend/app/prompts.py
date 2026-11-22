@@ -7,7 +7,15 @@ from typing import Literal
 
 from pydantic import Field
 
-from app.bank_contracts import ContentKey, GenerationOutput, PositiveInt, TopicCode
+from app.bank_contracts import (
+    MODALITIES,
+    ContentKey,
+    GenerationOutput,
+    ModalGenerationOutput,
+    PositiveInt,
+    TopicCode,
+    modality_counts,
+)
 from app.content import EducationalSheet
 from app.models import MCER, Model, PromptDocument, object_id
 
@@ -18,6 +26,7 @@ GENERATION_VARIABLES_BY_VERSION = {
     1: LEGACY_GENERATION_VARIABLES,
     2: GENERATION_VARIABLES,
     3: GENERATION_VARIABLES | {"ejemplos_pedagogicos", "enunciados_excluidos"},
+    4: GENERATION_VARIABLES | {"ejemplos_pedagogicos", "enunciados_excluidos", "distribucion"},
 }
 
 
@@ -29,6 +38,7 @@ class GenerationParameters(Model):
     ficha_version: PositiveInt = 1
     # Contrato interno. Etiqueta de la asignatura existente, resuelta por el backend.
     idioma_objetivo: Literal["Inglés"] = "Inglés"
+    distribucion: dict[str, int] | None = None
 
     def content_key(self) -> ContentKey:
         return ContentKey(
@@ -111,6 +121,7 @@ def render_generation_prompt(
             "idioma_objetivo": parameters.idioma_objetivo,
             "ejemplos_pedagogicos": examples,
             "enunciados_excluidos": json.dumps(list(exclusions), ensure_ascii=False),
+            "distribucion": json.dumps(parameters.distribucion, ensure_ascii=False),
         }
     )
 
@@ -118,7 +129,37 @@ def render_generation_prompt(
 def validate_generation_output(
     payload: object, parameters: GenerationParameters
 ) -> GenerationOutput:
-    output = GenerationOutput.model_validate(payload)
+    output = (
+        ModalGenerationOutput if parameters.distribucion is not None else GenerationOutput
+    ).model_validate(payload)
     if len(output.preguntas) != parameters.cantidad:
         raise ValueError("El lote no contiene la cantidad solicitada")
+    if parameters.distribucion is not None:
+        if (
+            set(parameters.distribucion) != set(MODALITIES)
+            or any(type(v) is not int or v < 0 for v in parameters.distribucion.values())
+            or sum(parameters.distribucion.values()) != parameters.cantidad
+            or modality_counts(output.preguntas) != parameters.distribucion
+        ):
+            raise ValueError("La distribución de modalidades no coincide con la solicitada")
     return output
+
+
+def generation_output_schema(parameters):
+    return (
+        ModalGenerationOutput if parameters.distribucion is not None else GenerationOutput
+    ).model_json_schema()
+
+
+def validate_generation_envelope(payload):
+    """El lote es recuperable solo con raíz conocida y un array acotado."""
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"preguntas"}
+        or not isinstance(payload["preguntas"], list)
+        or len(payload["preguntas"]) > 50
+    ):
+        raise ValueError(
+            "JSON global inválido: se requiere únicamente preguntas, un array de hasta 50"
+        )
+    return payload

@@ -32,6 +32,7 @@ def snapshot(user, bank, documents):
                 formato="fill_blanks",
                 enunciado=question.enunciado,
                 solucion=question.solucion.model_dump(),
+                modalidad=question.modalidad,
             )
         )
         origins.append(

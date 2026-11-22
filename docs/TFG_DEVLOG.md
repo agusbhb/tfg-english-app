@@ -2351,3 +2351,226 @@ ni un ADR nuevo. Sin cambios frontend, README ni operaciones Git de escritura.
 El autor debe repetir el ensayo de treinta para conocer el motivo real. Los
 archivos de diagnóstico siguen ignorados por Git. El comando con run --rm y bind
 mount evita perder el texto al retirar el contenedor temporal.
+## 2026-11-22 — Diversidad pedagógica con prompt v4 y cuotas verificadas
+
+### Revisión previa
+
+La ficha A1 v1 prohíbe negaciones, preguntas y auxiliares do/does: las treinta
+firmativas reportadas por el autor eran coherentes con esa restricción. El
+contrato permitía textos de varias palabras y apóstrofos, pero no tenía modalidad
+ni cuotas. grade usa strip y casefold según sensible_mayusculas y alternativas
+explícitas, sin LLM. Vue usa inputs de texto (maxlength 10000), borrador y envío
+sin separar palabras; resultados muestran respuestas aceptadas completas.
+
+### Decisiones e implementación
+
+Se conservan ficha v1 y prompts anteriores; se añaden ficha v2 y generacion_banco.v4.
+Se mantiene el seed idempotente: v4 inactiva, cinco prompts iniciales contando
+borradores/v2/v3/v4. La activación manual cambia prompt y referencia de ficha del
+banco en una transacción: v4 → ficha2, versiones anteriores → ficha1. No se migran
+preguntas previas ni se reescriben snapshots, usuarios, progreso o intentos.
+
+Se añade modalidad enumerada (afirmativa/negativa/interrogativa), opcional/None en
+contratos antiguos y obligatoria en ModalGenerationOutput de v4. Se persiste en
+BancoEjercicios y en el snapshot privado BlankQuestion, sin añadir controles Vue
+ni exponer soluciones. No se infiere la modalidad de preguntas existentes.
+El esquema enviado al proveedor también requiere la modalidad en v4.
+
+Reparto determinista por restos mayores: pesos 4/3/3, cocientes enteros y unidades
+restantes por resto descendente, desempate afirmativa/negativa/interrogativa.
+Para treinta: 12/9/9; cinco: 2/2/1. Se valida el reparto en backend, no solo en prompt.
+La ficha v2 usa auxiliares negativos con verbo en el hueco y auxiliares iniciales
+para interrogativas. Las alternativas contraída/expandida se declaran explícitas.
+Validadores estructurales cruzan modalidad con respuestas/hueco/puntuación y exigen
+ambas variantes de negativa. No se afirma validar toda la gramática de una frase:
+la adecuación pedagógica y concordancia requieren la revisión ya prevista.
+
+El colector mantiene exclusiones del banco y candidatas, cuotas del lote original,
+contador de rondas y llamadas fuera de transacción. Tras duplicados pide solo las
+modalidades faltantes. Publication exige de nuevo cantidad y cuotas exactas dentro
+de la transacción existente. Preview expone cuotas objetivo/final y por ronda.
+La detección de duplicados no depende de modalidad ni distractores. Se mantiene
+el diagnóstico de errores Anthropic, diferenciando cantidad y distribución.
+
+No cambia grade ni las vistas de producción. Las pruebas confirman plays,
+doesn't like, does not like y Does; alternativas no declaradas y flexiones incorrectas
+se rechazan. No se añade normalización implícita de apóstrofos tipográficos.
+
+### Pruebas y comprobaciones ejecutadas
+
+- Ejecución final completa backend: 321 aprobadas en 70,09 s, con MongoDB replica
+  set aislado y proveedor simulado. Quince casos nuevos en test_modalities.py.
+- Cuotas 12/9/9 y redondeo para cantidades 1–50; modalidades ausentes/desconocidas;
+  corrección explícita de contracciones e interrogativas; flujo v4 de cinco/treinta,
+  duplicado negativo que obliga a pedir una negativa en siguiente ronda; rechazo de
+  cantidad/distribución incorrectas; publicación completa atómica y preguntas previas
+  intactas. Suites anteriores comprueban agotamiento, concurrencia y privacidad.
+- Primera ejecución detectó errores en fixtures nuevos (StudentAnswer en vez de
+  AnswerInput) y una expectativa de ficha2 inexistente, corregidos antes de repetir
+  la suite completa. No eran errores del corrector ni se modificó su comportamiento.
+- Cobertura backend/app: 1415/1474 = 96,00 % de líneas, sin ramas; XML generado.
+- Frontend: 77 aprobadas (cuatro nuevas para flujo blur/revisión/envío de respuestas
+  de varias palabras y contracciones); 98,40 % líneas, 93,42 % ramas. ESLint,
+  Prettier y build Vite correctos. El entorno Windows carecía de npm y del binding
+  nativo para Vitest; se ejecutó todo correctamente en Docker Node 24 con dependencias
+  existentes, sin modificar lockfile ni reinstalar dependencias.
+- Ruff/formato correctos, 36 archivos Python; imagen backend construida y ayuda de
+  activación comprobada sin red. Persiste advertencia conocida de Starlette/TestClient.
+- BANK_REFILL_ENABLED=false comprobado en Compose. No se ejecuta activación en
+  desarrollo, no se hacen llamadas reales ni se publica contenido. Volumen intacto.
+
+### Archivos principales y memoria
+
+bank_contracts.py, prompts.py, generation.py, replenishment.py, content.py,
+models.py, reservations.py, seed.py; script de activación y preview; nueva ficha/prompt;
+test_modalities.py y pruebas Vue/expectativas de seed. Se actualizan guía, seguimiento
+y decisión existente. README y Git de escritura excluidos.
+Pendiente: el autor activa v4 y evalúa contenido real; etiquetas y cuotas no garantizan
+por sí mismas la calidad lingüística. La proporción afecta a los lotes nuevos,
+no garantiza mezcla en cada intento secuencial de diez (el banco puede conservar
+preguntas antiguas afirmativas y no se reorganiza el orden en este incremento).
+## 2026-11-22 — Ajuste v4 a 50/35/15 y preguntas A1 con partículas
+
+Se cambia modality_distribution a pesos enteros 50/35/15, divisor 100 y restos
+mayores, conservando desempate afirmativa/negativa/interrogativa. Para treinta:
+15/11/4; para cinco: 2/2/1. El prompt v4 recibe cuotas calculadas; validación,
+rondas y publicación comparten la misma función, sin porcentajes estáticos duplicados.
+La ficha v2 admite sí/no y What, Where, When, How often con el hueco reservado
+al auxiliar do/does. El validador permite esos prefijos y rechaza otros, conservando
+signo ?, respuesta auxiliar y contratos anteriores. Se explica have/has como verbo
+principal: has en afirmativa; have tras do/does en negativas e interrogativas.
+No se incluyen have got, perfecto ni preguntas de sujeto.
+
+Pruebas finales ejecutadas: 327 backend aprobadas en 69,75 s, MongoDB aislado y
+sin llamadas reales. Seis casos nuevos cubren cinco prefijos (incluido vacío),
+rechazo de prefijo no permitido y respuestas afirmativas/negativas de have.
+Se actualiza la expectativa de treinta; permanecen las pruebas completas de rondas,
+cuotas y publicación atómica. Cobertura backend/app: 1416/1474 = 96,07 % de líneas.
+Ruff y formato correctos, 36 archivos Python. Advertencia conocida Starlette.
+No se repite frontend: no se modifica código Vue ni su contrato de respuesta.
+
+La ficha v2 sigue siendo el borrador de trabajo de v4 solicitado por el autor;
+como cambia su hash, la guía indica repetir la activación manual de v4 para
+actualizar la referencia del banco antes de generar. No se cambian datos ni hashes
+en desarrollo durante el ensayo. Se conservan ficha v1, prompts 1/2/3, snapshots,
+validación de alternativas explícitas, deduplicación y publicación completa.
+BANK_REFILL_ENABLED=false comprobado. No se realizan operaciones Git de escritura
+ni se modifica README. Guía y seguimiento actualizados.
+## 2026-11-22 — Política 70/20/10 por tema y nivel
+
+La distribución global anterior se sustituye por MODALITY_WEIGHTS, un registro
+explícito por (codigo_tema, nivel_mcer), actualmente solo Present Simple A1:
+70 afirmativas / 20 negativas / 10 interrogativas. Se valida que sean tres pesos
+enteros no negativos y sumen cien. No hay respaldo universal; v4 sin política
+falla antes de llamar al proveedor. Las versiones 1–3 no consultan el registro.
+El motor no crea contenido nuevo ni modifica otros temas al añadir esta política.
+
+Restos mayores y desempate fijo afirmativa/negativa/interrogativa conservados:
+30 → 21/6/3; 5 → 4/1/0. No se fuerza presencia de cada modalidad en cantidades
+pequeñas. El prompt recibe cuotas por su variable existente; el colector conserva
+el objetivo inicial durante las rondas, pide modalidades pendientes y comprueba
+completitud con ese objetivo. Preview informa la misma política. Publicación
+revalida usando tema y MCER del banco dentro de la transacción existente.
+No se cambian plantillas persistidas, fichas, snapshots ni pesos retrospectivos.
+Si v4 ya está activa, basta reconstruir backend; no requiere resembrar/reactivar.
+
+Archivos de código de este ajuste: bank_contracts.py, generation.py,
+replenishment.py, scripts/preview_openrouter.py y tests/test_modalities.py.
+Se actualizan guía, seguimiento y la decisión existente. Sin dependencias nuevas,
+interfaz pública de configuración ni cambios de infraestructura/README.
+
+Comprobaciones ejecutadas: 329 pruebas backend aprobadas en 70,87 s con MongoDB
+replica set aislado. Dos casos nuevos comprueban políticas independientes por tema
+y nivel (entrada sintética solo en tests), rechazo de pesos inválidos/desconocidos,
+y preview legado sin cuotas aun quitando su entrada de política. Pruebas de reparto,
+rondas y publicación existentes pasan con las nuevas expectativas de cinco/treinta.
+Cobertura backend/app: 1424/1482 = 96,09 % de líneas, no ramas; XML generado.
+Ruff/formato correctos en 36 archivos. Advertencia conocida de Starlette/TestClient.
+No se repite frontend/build: no hay cambios en vistas, dependencias ni respuesta API.
+BANK_REFILL_ENABLED=false comprobado en Compose; sin llamadas reales ni cambios
+en desarrollo o su volumen. Se elimina solo la base efímera de pruebas.
+Sin operaciones Git de escritura; se conservan los cambios locales anteriores.
+## 2026-11-22 — Enunciados v4 sin etiquetas de modalidad
+
+La ficha v2 usaba (verbo; affirmative/negative) y (question), y v4 repetía esa
+pista en su ejemplo JSON. Se actualizan a (verbo), (not verbo) y hueco auxiliar
+interrogativo sin etiqueta, conservando modalidad en el JSON estructurado.
+ModalBankQuestion rechaza las palabras de modalidad inglesas/españolas y marcadores
+(question)/(pregunta), incluidos corchetes y variantes de mayúsculas. El rechazo
+se aplica a nuevas salidas v4, no a BaseBankQuestion/GeneratedBankQuestion ni a
+BlankQuestion de documentos anteriores. No se migran ni limpian preguntas existentes.
+Cuotas 70/20/10 por tema/nivel, corrector, rondas, deduplicación y publicación
+atómica permanecen. Las fixtures v4 se adaptan al formato nuevo.
+
+Como el seed inserta sin sobrescribir, se añade una opción manual explícita
+--actualizar-texto al comando de activación, limitada a v4. Reemplaza únicamente
+contenido_prompt y variables_requeridas desde su origen versionado local; conserva
+_id/versión/creado_en, desactiva otras versiones y actualiza referencia/hash de la
+ficha en la misma transacción. Sin opción, sigue conservando el texto persistido.
+Es una revisión del borrador v4 solicitada por el autor, no un cambio silencioso
+sobre versiones anteriores. Debe repetirse la activación con esa opción porque
+cambiaron tanto el texto operativo como el hash de la ficha.
+
+Comprobaciones: 339 pruebas backend aprobadas en 68,44 s con MongoDB replica set
+exclusivo y proveedores simulados. Diez casos nuevos: nueve variantes de etiquetas
+rechazadas por v4 pero legibles con el modelo legado, y actualización explícita de
+texto/referencia con preservación de otras versiones y una sola activa. Permanecen
+las pruebas de cuotas, rondas y publicación. Cobertura backend/app 1426/1484 =
+96,09 % de líneas, sin ramas. Ruff/formato correctos (36 archivos), imagen construida
+y ayuda CLI comprobada sin red. Se corrigió un zip de test sin strict antes de la
+suite; advertencia conocida Starlette/TestClient. No se repite frontend porque
+no se modifica su código ni contrato de respuesta.
+
+Archivos: content/ingles/present-simple/A1/v2.md, seed_data/prompts/generacion_banco.v4.txt,
+app/bank_contracts.py, scripts/activate_generation_prompt.py y tests/test_modalities.py.
+Guía y seguimiento actualizados. Ficha v1 y prompts 1/2/3 intactos. Sin dependencias,
+README, llamadas reales, cambios en desarrollo ni operaciones Git de escritura.
+BANK_REFILL_ENABLED=false verificado. Activación real pendiente del autor.
+## 2026-11-22 — Recuperación de preguntas válidas en lotes parcialmente inválidos
+
+Antes, Anthropic/OpenRouter validaban GenerationOutput completo antes de devolver
+la respuesta: una pregunta inválida impedía al colector acceder a las restantes.
+Se separa validación global y por elemento. GenerationRequest añade un modo interno
+validacion_parcial (default false para compatibilidad con consumidores estrictos).
+El colector lo activa en preview y worker; los adaptadores devuelven el payload
+recuperable con métricas manteniendo modelo, stop_reason, BYOK, TLS y tamaños.
+El validador estricto anterior sigue disponible sin alterar sus pruebas unitarias.
+
+Se exige raíz JSON conocida con únicamente preguntas, un array de hasta cincuenta;
+JSON ilegible, raíz incorrecta o sobre/proveedor inválido siguen siendo errores
+fatales claros, sin reparar texto truncado ni aceptar metadatos globales inventados.
+Cada pregunta se valida con GeneratedBankQuestion o ModalBankQuestion según la versión.
+Se conservan válidas, se registran inválidas con índice desde cero, campo, regla y
+motivo sin inputs/contexto Pydantic. Un mapper de reglas cruzadas conocidas señala
+campos como distractores/enunciado donde Pydantic ubicaba el error en la raíz.
+
+Después se deduplica por enunciado en banco, candidatas y misma ronda. Se retienen
+solo candidatas que caben en las cuotas pendientes originales (70/20/10 para A1).
+Los excedentes de cuota se cuentan separados; las preguntas válidas no se pierden
+por errores de otras preguntas. Se piden faltantes por modalidad hasta el límite
+durable de llamadas. La publicación conserva revalidación de duplicados, cantidad,
+cuotas y transacción: no se publican lotes incompletos ni fragmentos del lote.
+No se modifica corrector, ficha, prompt activo ni pregunta persistida de desarrollo.
+
+Preview añade preguntas_rechazadas_contrato, rechazos_contrato (ronda/indice/errores)
+y preguntas_descartadas_cuota; duplicadas se computan independientemente de los
+rechazos, también dentro de una ronda. Worker persiste el contador total y resúmenes
+index/campo/motivo en el límite existente de errores (49, más error de lote si procede).
+Los consumidores de métricas antiguas admiten el contador ausente con default cero.
+
+Pruebas finales: 347 backend aprobadas en 72,94 s, MongoDB replica set aislado y
+proveedores simulados. Ocho casos nuevos: treinta con una negativa inválida conserva
+29 y pide una negativa; error repetido en segunda ronda conserva candidatas y
+completa en tercera; worker publica exactamente treinta o ninguna al agotar rondas;
+estructuras globales inválidas no cambian documentos/índices. Se adapta la regresión
+CLI de segunda ronda para informar rechazos/incompletitud sin error global; captura
+de texto, validadores estrictos directos y compatibilidad legado siguen probados.
+Se actualizan expectativas de tests que antes rechazaban cualquier lote malformado.
+
+Ruff/formato correctos en 37 archivos; construcción backend correcta. Cobertura
+backend/app 1467/1528 = 96,01 % de líneas, no ramas; XML generado. Se repitió la suite
+tras precisar los campos de errores cruzados, sin fallos. Persiste advertencia conocida
+Starlette/TestClient. No se repite frontend: no cambia código ni contrato de práctica.
+No hay dependencias nuevas. BANK_REFILL_ENABLED=false comprobado. Sin llamadas reales,
+modificaciones de datos de desarrollo, README ni operaciones Git de escritura.
+Guía, seguimiento y decisión existente actualizados; prueba real pendiente del autor.

@@ -305,14 +305,17 @@ def test_malformed_generation_is_not_published(refill_app, invalid):
         elif invalid == "metadata":
             payload["preguntas"][0]["banco_id"] = str(ObjectId())
         else:
-            payload["preguntas"][1] = copy.deepcopy(payload["preguntas"][0])
+            if len(payload["preguntas"]) > 1:
+                payload["preguntas"][1] = copy.deepcopy(payload["preguntas"][0])
+            else:
+                payload["preguntas"][0]["enunciado"] = "She ___ and ___ every day."
         return payload
 
     provider.transform = corrupt
     with refill_app(provider, bank_refill_max_attempts=1) as (client, db, headers, topic):
         assert create(client, headers, topic).status_code == 201
         bank = wait_for(lambda: state(db, "error"))
-        assert bank["reposicion"]["error_codigo"] == "contenido_invalido"
+        assert bank["reposicion"]["error_codigo"] == "lote_incompleto"
         assert db.BancoEjercicios.count_documents({}) == bank["publicado_hasta"] == 10
         assert db.Progreso.find_one()["ultima_secuencia_reservada"] == 10
 

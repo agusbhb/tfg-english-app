@@ -60,7 +60,7 @@ def test_variables_must_match_the_declared_version(version):
 
 def test_unknown_template_version_requires_an_explicit_contract():
     prompt = initial_generation_prompt()
-    prompt.version = 4
+    prompt.version = 5
     with pytest.raises(ValueError, match="no soportada"):
         validate_generation_template(prompt)
 
@@ -93,7 +93,7 @@ def test_sheet_is_versioned_hashed_and_does_not_assign_school_year(parameters):
 
 @pytest.mark.parametrize(
     "topic,level,version",
-    [("past-simple", "A1", 1), ("present-simple", "B2", 1), ("present-simple", "A1", 2)],
+    [("past-simple", "A1", 1), ("present-simple", "B2", 1), ("present-simple", "A1", 3)],
 )
 def test_unknown_sheet_has_no_fallback(topic, level, version):
     with pytest.raises(ValueError, match="No existe"):
@@ -245,7 +245,7 @@ def test_seed_does_not_activate_another_template_when_existing_generation_is_act
 def test_ambiguous_active_versions_fail_closed(api):
     client, db, _ = api
     prompt = db.Prompts.find_one({"nombre": "generacion_banco"})
-    prompt.update(_id=ObjectId(), version=4)
+    prompt.update(_id=ObjectId(), version=5)
     db.Prompts.insert_one(prompt)
     client.portal.call(seed_database, client.app.state.database)
     with pytest.raises(ValueError, match="única"):
@@ -262,7 +262,7 @@ def test_concurrent_seed_inserts_one_operational_version(api):
                 lambda _: client.portal.call(seed_database, client.app.state.database), range(2)
             )
         )
-    assert db.Prompts.count_documents({"nombre": "generacion_banco"}) == 2
+    assert db.Prompts.count_documents({"nombre": "generacion_banco"}) == 3
     assert db.Prompts.count_documents({"tipo": "generacion", "activo": True}) == 1
 
 

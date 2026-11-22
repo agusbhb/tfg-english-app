@@ -565,3 +565,182 @@ para inspección local; sin --guardar-texto no se escriben archivos del modelo.
 Para ensayar el flujo de hasta tres rondas, cambiar --modo diagnostico por --modo
 lote; puede facturar varias llamadas. No ejecutar ambos comandos si solo se quiere
 una llamada. Este ajuste no cambia el prompt activo ni publica candidatas.
+## Diversidad Present Simple A1 — prompt v4 y ficha v2
+
+La ficha v1 y los prompts anteriores se conservan. El seed prepara v4 inactiva.
+La activación manual de v4 cambia atómicamente el prompt activo y la referencia
+ficha del banco Present Simple A1 a versión 2; conserva los snapshots y preguntas
+existentes. Volver a versiones 1/2/3 restaura la referencia a ficha v1.
+La ficha nueva incluye afirmativas, negativas e interrogativas de sí/no o con What, Where, When y How often, con do/does.
+En negativas el hueco abarca auxiliar + not + verbo base; en interrogativas solo
+Do/Does al inicio o tras la partícula A1, con verbo léxico completo y signo ?.
+
+Reparto vigente de Present Simple A1: pesos 70/20/10, divisor 100, suelo de cada cuota y asignación de unidades restantes por
+mayor resto decimal. Desempate fijo: afirmativa, negativa, interrogativa.
+30 → 21/6/3; 5 → 4/1/0; 3 → 2/1/0; 2 → 2/0/0; 1 → 1/0/0.
+El campo modalidad es obligatorio y enumerado en el esquema enviado con v4.
+El backend valida modalidades, cantidad exacta y distribución antes de aceptar una
+ronda y revalida cuotas antes de publicar. Hay comprobaciones estructurales de
+modalidad, pero no constituyen una demostración lingüística de corrección gramatical.
+Para preguntas antiguas el campo es opcional, sin inferir etiquetas automáticamente.
+
+Tras filtrar duplicados se conserva la modalidad de cada candidata; la ronda
+siguiente pide solo las cuotas pendientes del reparto original (no reparte de nuevo
+la cantidad faltante). Un lote incompleto o mal distribuido nunca se publica.
+La previsualización informa distribucion_objetivo, distribucion_final y las cuotas
+solicitadas por ronda. La deduplicación sigue basándose solo en el enunciado.
+
+El corrector no cambia: compara alternativas explícitas tras strip/casefold según
+sensible_mayusculas. No expande contracciones ni normaliza espacios interiores o
+apóstrofos tipográficos. La ficha exige declarar doesn't like y does not like como
+alternativas; el alumno acierta cualquiera solo si está declarada. Interrogativas
+aceptan Do/Does según concordancia. Mantener revisión humana de las alternativas.
+
+Con BANK_REFILL_ENABLED=false en .env, desde PowerShell en la raíz:
+
+```powershell
+docker compose build backend
+docker compose run --rm --no-deps backend python -m scripts.activate_generation_prompt --version 4
+```
+
+Ensayo de cinco (puede efectuar varias llamadas, sin publicar):
+
+```powershell
+docker compose run --rm --no-deps backend python -m scripts.preview_openrouter --proveedor anthropic --cantidad 5 --modo lote
+```
+
+Ensayo de treinta, ejecutarlo únicamente cuando se quiera consumir otra generación:
+
+```powershell
+docker compose run --rm --no-deps backend python -m scripts.preview_openrouter --proveedor anthropic --cantidad 30 --modo lote
+```
+
+Se conserva --modo diagnostico para una sola llamada y --guardar-texto con el bind
+mount documentado antes. No activar la reposición para estas previsualizaciones.
+La aplicación habitual deberá recrear backend con la imagen nueva antes de leer
+preguntas v4: docker compose up -d --no-deps --wait backend. No recrear el volumen.
+### Ajuste anterior de v4: 50/35/15 y partículas A1 (sustituido por la política siguiente)
+
+La proporción se resuelve en el backend, que completa distribucion del prompt v4;
+no hay un segundo porcentaje estático que pueda divergir del validador. Restos
+mayores y desempate anteriores conservados: treinta produce 15/11/4 (el empate
+entre negativas e interrogativas se asigna a negativas), cinco produce 2/2/1.
+Las rondas y publicación usan la misma función y mantienen las cuotas pendientes.
+Se admiten What/Where/When/How often antes del hueco auxiliar, además de sí/no.
+Have/has como verbo léxico: has afirmativo, have tras do/does y not; sin have got
+ni auxiliares perfectos. No se admiten otras partículas ni preguntas de sujeto.
+
+La ficha v2 local ha cambiado: volver a ejecutar activate_generation_prompt
+--version 4 después de construir la imagen actual actualiza su referencia/hash
+sin sobrescribir prompts existentes ni modificar intentos anteriores. Antes de
+hacerlo se mantiene BANK_REFILL_ENABLED=false. No se ha ejecutado esa actualización
+sobre desarrollo ni ninguna llamada real durante este ajuste. Ficha v1 y prompts
+anteriores intactos. Los comandos de preview cinco/treinta siguen siendo los mismos.
+### Política vigente por tema y nivel: Present Simple A1 = 70/20/10
+
+La configuración reside en MODALITY_WEIGHTS de backend/app/bank_contracts.py,
+con clave (codigo_tema, nivel_mcer) y pesos en orden afirmativa/negativa/interrogativa.
+Única política operativa actual: ("present-simple", "A1"): (70, 20, 10).
+Cada entrada debe contener tres enteros no negativos que sumen cien. Para otro
+contenido se añade su propia entrada, junto con su contenido/contratos apropiados;
+no se heredan porcentajes de Present Simple A1 ni se crean temas automáticamente.
+Una generación v4 sin política explícita falla antes de llamar al proveedor.
+Las versiones 1–3 mantienen su flujo sin cuotas, incluso sin entrada en el registro.
+
+Restos mayores y desempate afirmativa/negativa/interrogativa se conservan.
+Treinta: 21/6/3. Cinco: 4/1/0 (empate de restos afirmativa/interrogativa; gana afirmativa).
+No se fuerza una pregunta de cada modalidad en lotes pequeños. El colector fija
+la distribución inicial de ese banco y resta las candidatas aceptadas para cada
+ronda. Preview muestra esa misma distribución; publicación consulta la política
+del tema y nivel del banco, manteniendo comprobación de cuotas y atomicidad.
+
+Este ajuste no cambia texto/hash de ficha ni plantilla: v4 recibe la distribución
+calculada como variable. Si v4 y ficha v2 ya están activas, basta reconstruir y
+recrear el backend para aplicar los nuevos pesos; no hace falta reactivar ni sembrar:
+
+```powershell
+docker compose up -d --no-deps --build --wait backend
+```
+
+Mantener BANK_REFILL_ENABLED=false. Las previsualizaciones siguen sin publicar.
+Los lotes y snapshots ya existentes no se reinterpretan ni se reordenan.
+### Formato vigente de enunciados v4: sin etiquetas pedagógicas
+
+Afirmativa: My sister ___ (read) books every week. → reads.
+Negativa: The dog ___ (not drink) milk. → doesn't drink / does not drink.
+Interrogativa: Where ___ your parents work? → do.
+La modalidad permanece exclusivamente en el campo estructurado modalidad; no se
+escribe affirmative/negative/interrogative, sus etiquetas españolas ni (question)
+en el enunciado. La ficha v2 y el ejemplo JSON de v4 usan este formato. El contrato
+ModalBankQuestion rechaza etiquetas en nuevas generaciones v4, incluso en mayúsculas,
+corchetes, prefijos o pistas con punto y coma. La lectura de preguntas antiguas y
+el contrato legado conservan su compatibilidad, sin limpiar ni reescribir documentos.
+
+Este ajuste cambia el texto del prompt v4 y el hash de la ficha v2. El seed no
+sobrescribe prompts existentes. Para refrescar explícitamente el borrador v4 de
+MongoDB desde el archivo actual, reactivarlo y actualizar la referencia/hash de
+la ficha en la misma transacción, con BANK_REFILL_ENABLED=false:
+
+```powershell
+docker compose build backend
+docker compose run --rm --no-deps backend python -m scripts.activate_generation_prompt --version 4 --actualizar-texto
+```
+
+--actualizar-texto solo se admite con v4. Conserva _id, versión y creado_en; cambia
+contenido_prompt y variables_requeridas desde el origen del seed. Omitirlo conserva
+el texto ya persistido. Las versiones anteriores mantienen su contenido y solamente
+se ajusta el estado activo para garantizar una única versión operativa.
+Los snapshots y preguntas existentes no se modifican. Los pesos continúan siendo
+70/20/10 específicos de Present Simple A1 (30: 21/6/3; 5: 4/1/0).
+Después, si el autor decide consumir la llamada, el preview de treinta sigue siendo:
+
+```powershell
+docker compose run --rm --no-deps backend python -m scripts.preview_openrouter --proveedor anthropic --cantidad 30 --modo lote
+```
+
+No publica preguntas. La actualización y el ensayo real no se han ejecutado sobre
+desarrollo en este ajuste; solo se han ensayado con MongoDB aislado y simulación.
+### Validación parcial de respuestas recuperables
+
+Preview y reposición comparten un colector que valida cada pregunta por separado.
+Los adaptadores, en este flujo interno, entregan el JSON recuperable conservando
+metadatos; se mantienen sus controles de proveedor/modelo, finalización, TLS y BYOK.
+Una raíz distinta de un objeto que contiene únicamente preguntas (array, hasta 50)
+o un JSON ilegible siguen produciendo un error global claro. No se reparan fragmentos
+JSON truncados ni se aceptan metadatos internos inventados en la raíz.
+
+Cada elemento usa el contrato completo de pregunta de su versión: v4 requiere
+modalidad y formato pedagógico; versiones anteriores mantienen su contrato legado.
+Se descarta cada elemento inválido sin descartar las otras preguntas válidas. Se
+registran ronda e índice desde cero, campo, regla y motivo, sin valores rechazados.
+Los validadores cruzados sitúan algunos errores en la raíz; para reglas conocidas
+se señala el campo correspondiente, por ejemplo distractores o enunciado.
+
+El colector excluye duplicadas (banco, candidatas y misma ronda) y excedentes de
+cuota. Solo conserva candidatas que caben en la distribución pendiente del lote.
+Cada ronda solicita exclusivamente lo que falta, por modalidad para v4. Se conserva
+el límite de llamadas durable y la publicación exacta/atómica. Si se agota el límite,
+las candidatas se muestran pero no se publican. No hay recuperación tras caída de
+las candidatas mantenidas en memoria, como en el flujo anterior.
+
+La salida añade preguntas_rechazadas_contrato y rechazos_contrato con ronda,
+indice y errores {campo, regla, motivo}; rondas incluye los mismos detalles.
+preguntas_descartadas_duplicadas no incluye errores de contrato. Los excedentes
+válidos se cuentan en preguntas_descartadas_cuota, separados de ambos anteriores.
+Las métricas del worker guardan el contador total de rechazos y hasta 49 resúmenes
+(index/campo/motivo), dejando espacio para el error de lote en el límite existente
+de 50 errores. Preview conserva todos los detalles dentro del límite de rondas.
+
+Para probar treinta con v4, mantener BANK_REFILL_ENABLED=false y MongoDB arrancado:
+
+```powershell
+docker compose build backend
+# Solo si falta aplicar el último formato de ficha/prompt v4:
+docker compose run --rm --no-deps backend python -m scripts.activate_generation_prompt --version 4 --actualizar-texto
+# Ensayo real que realizará el autor; hasta el máximo configurado, sin publicar:
+docker compose run --rm --no-deps backend python -m scripts.preview_openrouter --proveedor anthropic --cantidad 30 --modo lote
+```
+
+Si v4 ya está actualizada no hace falta reactivarla: este ajuste no cambia ficha
+ni plantilla. --modo diagnostico conserva una sola llamada y muestra rechazos sin
+intentar completar. --guardar-texto y su bind mount continúan disponibles.

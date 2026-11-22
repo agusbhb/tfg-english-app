@@ -190,6 +190,7 @@ class BlankQuestion(Model):
     opciones: None = None
     hueco_id: GapId | None = None
     solucion: BlankSolution
+    modalidad: Literal["afirmativa", "negativa", "interrogativa"] | None = None
 
 
 Question = Annotated[ChoiceQuestion | BlankQuestion, Field(discriminator="formato")]

@@ -267,7 +267,7 @@ def test_seed_repeated_preserves_ids_manual_changes_users_and_tests(api, registr
     after = {name: list(database[name].find()) for name in database.list_collection_names()}
     assert before == after
     assert len(after["BancoEjercicios"]) == 10
-    assert len(after["Prompts"]) == 4
+    assert len(after["Prompts"]) == 5
     assert [p["nombre"] for p in after["Prompts"] if p["activo"]] == ["generacion_banco"]
     assert after["Tests"] == []
 

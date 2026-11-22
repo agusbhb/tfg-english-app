@@ -21,6 +21,8 @@ from app.bank_contracts import (
     GenerationMetrics,
     GenerationOutput,
     GenerationReference,
+    modality_counts,
+    modality_distribution,
 )
 from app.generation import (
     collect_generation_batch,
@@ -178,8 +180,12 @@ class BankRefiller:
                 raise NoNewQuestions("El lote no contiene preguntas nuevas")
             if len(accepted) != bank.reposicion.cantidad:
                 raise IncompleteBatch("El lote ha perdido candidatas antes de publicar")
+            if metrics.prompt_version >= 4 and modality_counts(accepted) != modality_distribution(
+                bank.reposicion.cantidad, bank.codigo_tema, bank.nivel_mcer_objetivo
+            ):
+                raise IncompleteBatch("La distribución no coincide al publicar")
             errors = (
-                []
+                list(metrics.errores)
                 if len(accepted) == len(output.preguntas)
                 else [
                     GenerationError(
@@ -263,7 +269,10 @@ class BankRefiller:
         if metrics is not None:
             changes["ultima_generacion"] = metrics.model_copy(
                 update={
-                    "errores": [GenerationError(codigo=code, mensaje="El lote no se ha publicado")],
+                    "errores": (
+                        metrics.errores
+                        + [GenerationError(codigo=code, mensaje="El lote no se ha publicado")]
+                    )[-50:],
                 }
             ).model_dump()
         await self.database.Bancos.update_one(self.owned(bank), {"$set": changes})
@@ -337,6 +346,21 @@ class BankRefiller:
                     "coste_estimado_usd": batch.total("coste_estimado_usd"),
                     "preguntas_recibidas": batch.received,
                     "preguntas_validas": len(batch.questions),
+                    "preguntas_rechazadas_contrato": batch.rejected,
+                    "errores": [
+                        GenerationError(
+                            codigo="pregunta_invalida",
+                            mensaje=(
+                                f"Ronda {round_index + 1}, índice {rejection['indice']}: "
+                                + "; ".join(
+                                    f"{issue['campo']}: {issue['motivo']}"
+                                    for issue in rejection["errores"]
+                                )
+                            )[:500],
+                        )
+                        for round_index, round_ in enumerate(batch.rounds)
+                        for rejection in round_["rechazos_contrato"]
+                    ][:49],
                 }
             )
             if not batch.complete:

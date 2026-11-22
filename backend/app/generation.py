@@ -3,16 +3,25 @@
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
-from app.bank_contracts import Counter, GenerationOutput, GenerationReference
+from app.bank_contracts import (
+    Counter,
+    GeneratedBankQuestion,
+    GenerationOutput,
+    GenerationReference,
+    ModalBankQuestion,
+    modality_counts,
+    modality_distribution,
+)
 from app.content import load_educational_sheet
 from app.models import AIModel, Model, SubjectDocument
 from app.prompts import (
     GenerationParameters,
+    generation_output_schema,
     load_generation_prompt,
     render_generation_prompt,
-    validate_generation_output,
+    validate_generation_envelope,
 )
 
 
@@ -23,6 +32,7 @@ class GenerationRequest:
     parameters: GenerationParameters
     output_schema: dict
     ronda: int = 1
+    validacion_parcial: bool = False
 
 
 class GenerationResponse(Model):
@@ -47,6 +57,32 @@ def sentence_key(text):
     return " ".join(text.split()).casefold()
 
 
+def question_contract_errors(error):
+    issues = []
+    for item in error.errors(include_input=False, include_context=False, include_url=False):
+        field = ".".join(map(str, item["loc"]))
+        if not field:
+            # Los validadores cruzados de Pydantic sitúan el error en la raíz.
+            field = next(
+                (
+                    name
+                    for marker, name in (
+                        ("distractores", "distractores"),
+                        ("hueco", "enunciado"),
+                        ("etiquetas", "enunciado"),
+                        ("interrogativa", "enunciado"),
+                        ("principal", "respuesta_principal"),
+                        ("alternativas", "solucion.respuestas_aceptadas"),
+                        ("variante", "solucion.respuestas_aceptadas"),
+                    )
+                    if marker in item["msg"]
+                ),
+                "$",
+            )
+        issues.append({"campo": field, "regla": item["type"], "motivo": item["msg"]})
+    return issues
+
+
 async def filter_bank_duplicates(database, bank_id, output, *, session=None):
     """Solo lectura; los distractores no definen la identidad de una pregunta.
 
@@ -65,7 +101,7 @@ async def filter_bank_duplicates(database, bank_id, output, *, session=None):
 
 
 async def prepare_generation_context(
-    database, bank, model, quantity, generation_id, extra_exclusions=()
+    database, bank, model, quantity, generation_id, extra_exclusions=(), distribution=None
 ):
     """Solo lectura: mismo contexto para el worker y el ensayo manual sin publicar."""
     raw = await database.Asignaturas.find_one({"niveles.temas.tema_id": bank.tema_id})
@@ -82,6 +118,16 @@ async def prepare_generation_context(
     if sheet.referencia != bank.ficha:
         raise ValueError("La ficha instalada no coincide con la referencia del banco")
     prompt = await load_generation_prompt(database, catalog.id)
+    if prompt.version >= 4:
+        if bank.ficha.version != 2:
+            raise ValueError("El prompt v4 requiere la ficha educativa v2")
+        parameters = parameters.model_copy(
+            update={
+                "distribucion": distribution
+                if distribution is not None
+                else modality_distribution(quantity, bank.codigo_tema, bank.nivel_mcer_objetivo)
+            }
+        )
     existing = (
         await database.BancoEjercicios.find({"banco_id": bank.id}, {"enunciado": 1})
         .sort("secuencia", 1)
@@ -102,6 +148,7 @@ async def prepare_generation_context(
 @dataclass
 class GenerationBatch:
     quantity: int
+    distribution: dict | None = None
     trace: GenerationReference | None = None
     questions: list = field(default_factory=list)
     rounds: list = field(default_factory=list)
@@ -109,7 +156,11 @@ class GenerationBatch:
 
     @property
     def complete(self):
-        return len(self.questions) == self.quantity
+        return len(self.questions) == self.quantity and (
+            self.trace is None
+            or self.trace.prompt_version < 4
+            or modality_counts(self.questions) == self.distribution
+        )
 
     def total(self, name):
         values = [getattr(response, name) for response in self.responses]
@@ -118,6 +169,14 @@ class GenerationBatch:
     @property
     def received(self):
         return sum(round_["recibidas"] for round_ in self.rounds)
+
+    @property
+    def rejected(self):
+        return sum(r["rechazadas_contrato"] for r in self.rounds)
+
+    @property
+    def duplicate_count(self):
+        return sum(r["duplicadas"] for r in self.rounds)
 
 
 async def collect_generation_batch(
@@ -136,7 +195,15 @@ async def collect_generation_batch(
             remaining,
             generation_id,
             [q.enunciado for q in result.questions],
+            {
+                mode: target - modality_counts(result.questions)[mode]
+                for mode, target in result.distribution.items()
+            }
+            if result.distribution is not None
+            else None,
         )
+        if result.trace is None:
+            result.distribution = parameters.distribucion
         if result.trace is not None and result.trace != trace:
             raise ValueError("El contexto de generación cambió durante el lote")
         result.trace = trace
@@ -148,17 +215,52 @@ async def collect_generation_batch(
                     str(generation_id),
                     text,
                     parameters,
-                    GenerationOutput.model_json_schema(),
+                    generation_output_schema(parameters),
                     ronda=len(result.responses) + 1,
+                    validacion_parcial=True,
                 )
             )
         )
-        output = validate_generation_output(response.payload, parameters)
+        payload = validate_generation_envelope(response.payload)
+        valid = []
+        rejected = []
+        question_type = (
+            ModalBankQuestion if parameters.distribucion is not None else GeneratedBankQuestion
+        )
+        for index, raw in enumerate(payload["preguntas"]):
+            try:
+                valid.append((index, question_type.model_validate(raw)))
+            except ValidationError as error:
+                rejected.append(
+                    {
+                        "indice": index,
+                        "errores": question_contract_errors(error),
+                    }
+                )
         result.responses.append(response)
         accepted_keys = {sentence_key(q.enunciado) for q in result.questions}
-        new = [q for q in output.preguntas if sentence_key(q.enunciado) not in accepted_keys]
-        combined = result.questions + new
-        previous = len(result.questions)
+        duplicates = 0
+        overflow = 0
+        # Releer el banco para excluir también publicaciones concurrentes.
+        current = await database.BancoEjercicios.find(
+            {"banco_id": bank.id}, {"enunciado": 1}
+        ).to_list()
+        used = accepted_keys | {sentence_key(q["enunciado"]) for q in current}
+        combined = list(result.questions)
+        for _, question in valid:
+            key = sentence_key(question.enunciado)
+            if key in used:
+                duplicates += 1
+                continue
+            if len(combined) >= quantity or (
+                result.distribution is not None
+                and modality_counts(combined)[question.modalidad]
+                >= result.distribution[question.modalidad]
+            ):
+                overflow += 1
+                continue
+            combined.append(question)
+            used.add(key)
         result.questions = (
             await filter_bank_duplicates(database, bank.id, GenerationOutput(preguntas=combined))
             if combined
@@ -167,8 +269,12 @@ async def collect_generation_batch(
         result.rounds.append(
             {
                 "solicitadas": remaining,
-                "recibidas": len(output.preguntas),
-                "duplicadas": previous + len(output.preguntas) - len(result.questions),
+                "distribucion_solicitada": parameters.distribucion,
+                "recibidas": len(payload["preguntas"]),
+                "duplicadas": duplicates + len(combined) - len(result.questions),
+                "rechazadas_contrato": len(rejected),
+                "rechazos_contrato": rejected,
+                "descartadas_cuota": overflow,
                 "candidatas_acumuladas": len(result.questions),
                 "id_llamada": response.id_llamada,
                 "tokens_entrada": response.tokens_entrada,

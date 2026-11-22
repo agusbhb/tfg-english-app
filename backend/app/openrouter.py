@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from app.generation import GenerationResponse
 from app.models import AIModel
-from app.prompts import validate_generation_output
+from app.prompts import validate_generation_envelope, validate_generation_output
 
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -115,9 +115,13 @@ class OpenRouterProvider:
             if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
                 raise OpenRouterError("OpenRouter no devolvió una generación completa y aceptada")
             payload = json.loads(choice["message"]["content"])
-            validated = validate_generation_output(payload, request.parameters)
+            validated_payload = (
+                validate_generation_envelope(payload)
+                if request.validacion_parcial
+                else validate_generation_output(payload, request.parameters).model_dump()
+            )
             return GenerationResponse(
-                payload=validated.model_dump(),
+                payload=validated_payload,
                 tokens_entrada=usage.get("prompt_tokens"),
                 tokens_salida=usage.get("completion_tokens"),
                 id_llamada=data.get("id"),
@@ -129,6 +133,8 @@ class OpenRouterProvider:
             )
         except OpenRouterError:
             raise
+        except json.JSONDecodeError:
+            raise OpenRouterError("OpenRouter devolvió un JSON global ilegible") from None
         except (KeyError, IndexError, TypeError, ValueError, AttributeError, ValidationError):
             raise OpenRouterError(
                 "La respuesta de OpenRouter incumple el contrato de generación"

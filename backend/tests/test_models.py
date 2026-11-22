@@ -45,7 +45,7 @@ def test_initial_catalog_and_bank_are_valid_and_use_bson_ids():
     assert subject.model_dump(mode="json", by_alias=True)["_id"] == str(subject.id)
     assert subject.niveles[0].nombre_curso == "1.º ESO"
     validate_academic_reference(subject, subject.niveles[0].nivel_id, bank.tema_id)
-    assert len(prompts) == 4
+    assert len(prompts) == 5
     assert [(prompt.nombre, prompt.version) for prompt in prompts if prompt.activo] == [
         ("generacion_banco", 2)
     ]

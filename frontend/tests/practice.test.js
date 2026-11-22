@@ -41,6 +41,28 @@ const completed = {
     },
   ],
 }
+
+it.each(['plays', "doesn't like", 'does not like', 'Does'])(
+  'conserva la respuesta %s en blur, revisión y entrega',
+  async (answer) => {
+    await open('/tests/attempt')
+    await wrapper.get('#q1').setValue(answer)
+    await wrapper.get('#q1').trigger('blur')
+    await flushPromises()
+    expect(api.saveDraft).toHaveBeenCalledWith(
+      'attempt',
+      { pregunta_id: 'q1', respuesta_dada: answer },
+      'token',
+    )
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.get('.review-list').text()).toContain(answer)
+    await wrapper.get('dialog .primary-button').trigger('click')
+    await flushPromises()
+    expect(api.submitTest.mock.calls[0][1].respuestas[0].respuesta_dada).toBe(
+      answer,
+    )
+  },
+)
 beforeEach(async () => {
   auth.logout()
   vi.spyOn(api, 'login').mockResolvedValue({

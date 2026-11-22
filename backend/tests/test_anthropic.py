@@ -436,17 +436,17 @@ def test_cli_round_two_failure_reports_metadata_and_keeps_database_unchanged(
         ],
     )
     before = snapshot(settings)
-    with pytest.raises(SystemExit) as error:
-        cli.main()
-    assert error.value.code == 1
+    cli.main()
     report = json.loads(capsys.readouterr().out)
-    assert report["estado"] == "fallo_generacion_sin_publicar"
-    assert report["diagnostico"]["ronda"] == len(calls) == 2
-    assert report["diagnostico"]["id_llamada"] == "msg_failed_round_2"
-    assert report["diagnostico"]["preguntas_recibidas"] == 1
-    assert report["diagnostico"]["errores"][0]["campo"] == "preguntas.0"
-    assert len(report["textos_guardados"]) == 2
-    assert len(list((tmp_path / ".tools").glob("*.txt"))) == 2
+    assert report["estado"] == "lote_incompleto_sin_publicar"
+    assert report["numero_llamadas"] == len(calls) == 3
+    assert report["preguntas_candidatas"] == 4
+    assert report["preguntas_rechazadas_contrato"] == 2
+    assert report["rechazos_contrato"][0]["ronda"] == 2
+    assert report["rechazos_contrato"][0]["indice"] == 0
+    assert report["rechazos_contrato"][0]["errores"][0]["campo"] == "enunciado"
+    assert len(report["textos_guardados"]) == 3
+    assert len(list((tmp_path / ".tools").glob("*.txt"))) == 3
     assert snapshot(settings) == before
     assert settings.anthropic_api_key.get_secret_value() not in json.dumps(report)
 
@@ -472,3 +472,10 @@ def test_thirty_questions_report_exact_failing_question(settings, generation):
     assert diagnostic["preguntas_recibidas"] == diagnostic["preguntas_solicitadas"] == 30
     assert diagnostic["errores"][0]["campo"] == "preguntas.17"
     assert "Los distractores deben ser distintos" in diagnostic["errores"][0]["detalle"]
+    # El modo de colector conserva el JSON recuperable para validar cada elemento.
+    response = asyncio.run(
+        AnthropicProvider(
+            settings, httpx.MockTransport(lambda request: httpx.Response(200, json=data))
+        ).generate(replace(generation, validacion_parcial=True))
+    )
+    assert len(response.payload["preguntas"]) == 30
