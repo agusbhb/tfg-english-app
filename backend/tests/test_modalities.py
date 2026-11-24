@@ -22,7 +22,7 @@ from app.replenishment import BankRefiller, IncompleteBatch, now
 from app.schemas import AnswerInput
 from scripts.activate_generation_prompt import activate
 from scripts.data_snapshot import snapshot
-from scripts.preview_openrouter import preview
+from scripts.preview_generation import preview
 
 
 def question(mode, i):
@@ -349,7 +349,14 @@ def test_v4_distribution_rounds_and_atomic_publication(api, quantity):
     assert client.portal.call(
         refiller.publish, claimed, GenerationOutput(preguntas=report["preguntas"]), metrics
     )
-    new = list(database.BancoEjercicios.find({"secuencia": {"$gt": 11}}))
+    new = list(database.BancoEjercicios.find({"secuencia": {"$gt": 11}}).sort("secuencia", 1))
+    expected_questions = {q["enunciado"]: q for q in report["preguntas"]}
+    for document in new:
+        content = GeneratedBankQuestion.model_validate(
+            {k: document[k] for k in GeneratedBankQuestion.model_fields if k in document}
+        )
+        assert content.model_dump() == expected_questions[document["enunciado"]]
+        assert document["generacion"] == trace.model_dump()
     assert (
         modality_counts(
             [

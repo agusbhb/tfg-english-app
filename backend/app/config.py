@@ -14,11 +14,6 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     bank_refill_threshold: int = Field(default=20, ge=0, le=10000)
     bank_refill_enabled: bool = False
-    openrouter_api_key: SecretStr | None = None
-    openrouter_model: str = Field(
-        default="anthropic/claude-haiku-4.5", pattern=r"^anthropic/[a-z0-9][a-z0-9._-]+$"
-    )
-    openrouter_max_completion_tokens: int = Field(default=4096, ge=256, le=16000)
     anthropic_api_key: SecretStr | None = None
     anthropic_model: str = Field(
         default="claude-haiku-4-5-20251001", pattern=r"^claude-[a-z0-9][a-z0-9._-]+$"
@@ -33,9 +28,9 @@ class Settings(BaseSettings):
     bank_refill_retry_seconds: float = Field(default=5, ge=0, le=300)
     bank_refill_max_attempts: int = Field(default=3, ge=1, le=5)
 
-    @field_validator("openrouter_api_key", "anthropic_api_key", mode="before")
+    @field_validator("anthropic_api_key", mode="before")
     @classmethod
-    def optional_openrouter_key(cls, value):
+    def optional_anthropic_key(cls, value):
         return None if value == "" else value
 
     @model_validator(mode="after")

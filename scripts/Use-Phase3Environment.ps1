@@ -88,22 +88,22 @@ $taskNewValues = @{
     BANK_REFILL_ENABLED = 'false'
     BANK_REFILL_THRESHOLD = '20'
     BANK_REFILL_BATCH_SIZE = '30'
-    OPENROUTER_API_KEY = ''
-    OPENROUTER_MODEL = 'anthropic/claude-haiku-4.5'
-    OPENROUTER_MAX_COMPLETION_TOKENS = '4096'
+    ANTHROPIC_API_KEY = ''
+    ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
+    ANTHROPIC_MAX_TOKENS = '4096'
 }
 if (Test-Path -LiteralPath $taskDestination) {
     $taskExisting = Read-EnvValues ([System.IO.File]::ReadAllText($taskDestination))
-    foreach ($taskName in @('OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_MAX_COMPLETION_TOKENS')) {
+    foreach ($taskName in @('ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_MAX_TOKENS')) {
         if ($taskExisting.ContainsKey($taskName) -and $taskExisting[$taskName]) { $taskNewValues[$taskName] = $taskExisting[$taskName] }
     }
     $taskBackupDirectory = Join-Path $taskRoot '.tools'
     New-Item -ItemType Directory -Force -Path $taskBackupDirectory | Out-Null
-    $taskBackup = Join-Path $taskBackupDirectory ("env-before-openrouter-" + [guid]::NewGuid().ToString('N') + '.bak')
+    $taskBackup = Join-Path $taskBackupDirectory ("env-before-anthropic-" + [guid]::NewGuid().ToString('N') + '.bak')
     Copy-Item -LiteralPath $taskDestination -Destination $taskBackup
     Write-Output "Copia privada del entorno anterior: $taskBackup"
 }
 foreach ($taskName in $taskNewValues.Keys) { $taskText = Set-EnvValue $taskText $taskName $taskNewValues[$taskName] }
 [System.IO.File]::WriteAllText($taskDestination, $taskText, [System.Text.UTF8Encoding]::new($false))
 Write-Output "Entorno preparado: proyecto $Project, volumen $($taskMounts[0].Name), base $($taskValues['MONGODB_DB'])."
-Write-Output 'No se han arrancado contenedores ni modificado datos. Schema2/schema3 se conservan. Añade la clave de OpenRouter en el destino; reposición automática desactivada.'
+Write-Output 'No se han arrancado contenedores ni modificado datos. Schema2/schema3 se conservan. Añade la clave de Anthropic en el destino; reposición automática desactivada.'

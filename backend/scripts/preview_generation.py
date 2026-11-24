@@ -14,7 +14,6 @@ from app.bank_contracts import BankMetadataDocument, modality_counts
 from app.config import Settings
 from app.database import create_client
 from app.generation import collect_generation_batch
-from app.openrouter import OpenRouterError, OpenRouterProvider
 
 
 def text_capture(directory, records):
@@ -74,7 +73,6 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
             "modelo_solicitado": provider.model.modelo,
             "modelo_utilizado": response.modelo_utilizado,
             "proveedor": response.proveedor_utilizado,
-            "byok_confirmado": response.byok_confirmado,
             "id_llamada": response.id_llamada,
             "tokens_entrada": batch.total("tokens_entrada"),
             "tokens_salida": batch.total("tokens_salida"),
@@ -107,7 +105,6 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cantidad", type=int, default=5, choices=range(1, 51))
-    parser.add_argument("--proveedor", choices=("openrouter", "anthropic"), default="openrouter")
     parser.add_argument("--modo", choices=("diagnostico", "lote"), default="diagnostico")
     parser.add_argument(
         "--guardar-texto",
@@ -115,12 +112,10 @@ def main():
         help="Guardar únicamente el texto Anthropic en .tools (éxito o error de validación)",
     )
     args = parser.parse_args()
-    if args.guardar_texto and args.proveedor != "anthropic":
-        parser.error("--guardar-texto requiere --proveedor anthropic")
     captures = []
     try:
         settings = Settings()
-        provider = AnthropicProvider if args.proveedor == "anthropic" else OpenRouterProvider
+        provider = AnthropicProvider
         options = (
             {"capture_text": text_capture(Path.cwd() / ".tools", captures)}
             if args.guardar_texto
@@ -134,7 +129,7 @@ def main():
                 complete_batch=args.modo == "lote",
             )
         )
-    except (OpenRouterError, AnthropicError) as error:
+    except AnthropicError as error:
         if getattr(error, "diagnostic", None) is not None:
             print(
                 json.dumps(

@@ -1,11 +1,13 @@
 """Puerto inyectable. No incluye proveedor real ni implementación simulada."""
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from pydantic import Field, ValidationError
 
 from app.bank_contracts import (
+    MODALITIES,
     Counter,
     GeneratedBankQuestion,
     GenerationOutput,
@@ -43,7 +45,6 @@ class GenerationResponse(Model):
     id_llamada: str | None = Field(default=None, max_length=200, pattern=r"^[A-Za-z0-9._-]+$")
     modelo_utilizado: str | None = Field(default=None, max_length=200)
     proveedor_utilizado: str | None = Field(default=None, max_length=100)
-    byok_confirmado: bool | None = None
 
 
 class GenerationProvider(Protocol):
@@ -55,6 +56,27 @@ class GenerationProvider(Protocol):
 def sentence_key(text):
     """Mismo enunciado pese a mayúsculas o diferencias de espacios."""
     return " ".join(text.split()).casefold()
+
+
+def interleave_modalities(questions):
+    """Turnos ponderados suaves; conserva objetos y orden dentro de cada modalidad.
+
+    Los pesos son las cuotas del lote ya validado, nunca porcentajes globales.
+    En empates se usa MODALITIES; no hay aleatoriedad ni modificación de preguntas.
+    """
+    queues = {mode: deque(q for q in questions if q.modalidad == mode) for mode in MODALITIES}
+    weights = {mode: len(queue) for mode, queue in queues.items()}
+    if sum(weights.values()) != len(questions):
+        raise ValueError("El intercalado requiere una modalidad válida en cada pregunta")
+    scores = dict.fromkeys(MODALITIES, 0)
+    ordered = []
+    for _ in questions:
+        for mode in MODALITIES:
+            scores[mode] += weights[mode]
+        selected = max((mode for mode in MODALITIES if queues[mode]), key=scores.__getitem__)
+        ordered.append(queues[selected].popleft())
+        scores[selected] -= len(questions)
+    return ordered
 
 
 def question_contract_errors(error):

@@ -99,7 +99,7 @@ def test_one_request_tls_headers_schema_and_metrics(settings, generation, monkey
     assert result.id_llamada == "msg_test_123"
     assert (result.tokens_entrada, result.tokens_salida) == (120, 350)
     assert result.proveedor_utilizado == "Anthropic"
-    assert result.byok_confirmado is None and result.coste_estimado_usd is None
+    assert result.coste_estimado_usd is None
     assert settings.anthropic_api_key.get_secret_value() not in str(result)
 
 
@@ -220,8 +220,8 @@ def test_key_required_and_model_configurable(settings, generation):
         Settings(_env_file=None, **{**settings.model_dump(), "anthropic_model": "other/model"})
 
 
-def test_cli_selects_direct_adapter_without_changing_default(settings, monkeypatch, capsys):
-    from scripts import preview_openrouter as cli
+def test_cli_uses_only_direct_anthropic_adapter(settings, monkeypatch, capsys):
+    from scripts import preview_generation as cli
 
     monkeypatch.setattr(cli, "Settings", lambda: settings)
     calls = []
@@ -231,7 +231,7 @@ def test_cli_selects_direct_adapter_without_changing_default(settings, monkeypat
         return {"estado": "solo_revision_sin_publicar"}
 
     monkeypatch.setattr(cli, "preview", preview)
-    monkeypatch.setattr("sys.argv", ["preview", "--proveedor", "anthropic", "--cantidad", "5"])
+    monkeypatch.setattr("sys.argv", ["preview", "--cantidad", "5"])
     cli.main()
     assert isinstance(calls[0][1], AnthropicProvider) and calls[0][2] == 5
     assert "solo_revision_sin_publicar" in capsys.readouterr().out
@@ -240,7 +240,7 @@ def test_cli_selects_direct_adapter_without_changing_default(settings, monkeypat
 @pytest.mark.integration
 def test_preview_uses_mongodb_prompt_once_and_changes_no_data(api):
     from scripts.data_snapshot import snapshot
-    from scripts.preview_openrouter import preview
+    from scripts.preview_generation import preview
 
     settings = Settings(
         _env_file=None,
@@ -266,7 +266,6 @@ def test_preview_uses_mongodb_prompt_once_and_changes_no_data(api):
     assert len(calls) == 1 and len(report["preguntas"]) == 5
     assert report["prompt_version"] == 2 and report["id_llamada"] == "msg_test_123"
     assert report["estado"] == "solo_revision_sin_publicar"
-    assert report["byok_confirmado"] is None
     assert snapshot(settings) == before
     assert settings.anthropic_api_key.get_secret_value() not in json.dumps(report)
 
@@ -324,7 +323,7 @@ def test_failure_diagnostics_preserve_metadata_and_exact_rule(
 
 @pytest.mark.parametrize("invalid", [True, False])
 def test_optional_capture_saves_only_text_and_redacts_key(settings, generation, tmp_path, invalid):
-    from scripts.preview_openrouter import text_capture
+    from scripts.preview_generation import text_capture
 
     secret = settings.anthropic_api_key.get_secret_value()
     data = body(settings)
@@ -359,7 +358,7 @@ def test_optional_capture_saves_only_text_and_redacts_key(settings, generation, 
 
 
 def test_capture_write_failure_does_not_mask_validation(settings, generation, tmp_path):
-    from scripts.preview_openrouter import text_capture
+    from scripts.preview_generation import text_capture
 
     directory = tmp_path / ".tools"
     directory.write_text("un archivo impide crear el directorio", encoding="utf-8")
@@ -380,7 +379,7 @@ def test_capture_write_failure_does_not_mask_validation(settings, generation, tm
 def test_cli_round_two_failure_reports_metadata_and_keeps_database_unchanged(
     api, monkeypatch, capsys, tmp_path
 ):
-    from scripts import preview_openrouter as cli
+    from scripts import preview_generation as cli
     from scripts.data_snapshot import snapshot
 
     initial = api[2]
@@ -426,8 +425,6 @@ def test_cli_round_two_failure_reports_metadata_and_keeps_database_unchanged(
         "sys.argv",
         [
             "preview",
-            "--proveedor",
-            "anthropic",
             "--cantidad",
             "5",
             "--modo",

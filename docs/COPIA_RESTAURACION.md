@@ -1,9 +1,119 @@
 # Copia, restauración y ensayos aislados de TrAIner
 
-**Procedimiento vigente para el entorno existente (2026-11-18):** usar el apartado
-«OpenRouter y .env normal» al final. Las instrucciones anteriores con .env.schema3
-corresponden a la adopción original de fase 3. No copiar .env.example sobre un
-entorno con datos: esa plantilla describe una instalación nueva.
+**Proveedor vigente (2026-11-23): Anthropic directo**, según el procedimiento
+siguiente. Los apartados posteriores con OpenRouter, `preview_openrouter` y
+`--proveedor` se conservan como historial de los ensayos y ya no son comandos
+operativos. No copiar `.env.example` sobre un entorno con datos: esa plantilla
+describe una instalación nueva. Se conservan `.env.schema2`/`.env.schema3`.
+
+## Orden vigente de los lotes nuevos (2026-11-23)
+
+La publicación de generaciones v4 intercala las modalidades después de validar
+cuotas/duplicados y antes de asignar secuencias. Usa turnos ponderados suaves:
+en cada posición suma a cada modalidad su cuota y elige la de mayor puntuación;
+resta el tamaño del lote a la elegida. Los empates siguen afirmativa, negativa,
+interrogativa. Usa las cuotas del tema/nivel ya validadas, sin porcentajes globales
+ni azar. Mantiene el orden relativo de las preguntas dentro de cada modalidad.
+
+Para 30 con cuotas 21/6/3, cada bloque consecutivo de diez del lote contiene
+7 afirmativas, 2 negativas y 1 interrogativa. Las cuotas cero se omiten; cantidades
+menores no garantizan las tres modalidades si el reparto no las incluye.
+No se modifica ninguna pregunta ni se reasignan secuencias anteriores: banco ya
+publicado, cursores y snapshots existentes permanecen intactos. Un intento que
+incluya contenido antiguo puede conservar agrupaciones anteriores; no se migra.
+El cambio no requiere activar otra versión del prompt o de la ficha. Los apartados
+históricos que describen ausencia de intercalado documentan el comportamiento previo.
+
+La previsualización sigue mostrando las candidatas en el orden recibido/aceptado;
+el intercalado se aplica exclusivamente en el punto común de publicación, también
+al usar refill_once. Versiones antiguas sin modalidad mantienen su orden anterior.
+La publicación exacta y atómica conserva las mismas garantías y no escribe Progreso
+ni Tests. Mantener BANK_REFILL_ENABLED=false durante las comprobaciones normales.
+
+## Procedimiento vigente: Anthropic directo y un trabajo controlado
+
+Actualización 2026-11-23: al publicar un lote nuevo v4+, el backend intercala las
+modalidades con turnos ponderados deterministas, una vez verificadas sus cuotas.
+Para 21/6/3, cada uno de los tres bloques del lote de diez tiene 7/2/1; se conserva
+el orden dentro de cada modalidad y todos los datos de las preguntas. No se toca
+ninguna secuencia publicada, snapshot ni cursor. Otros tamaños y cuotas cero se
+adaptan a sus cantidades validadas. Los apartados históricos que describen lotes
+agrupados reflejan el comportamiento anterior a este ajuste. No hace falta
+reactivar v4 ni cambiar la ficha: desplegar la nueva imagen cuando proceda.
+La previsualización no publica y muestra el orden del colector; el intercalado
+definitivo ocurre en publish, tanto con el worker continuo como con refill_once.
+
+En el `.env` privado: `ANTHROPIC_API_KEY` con la clave propia de Anthropic,
+`ANTHROPIC_MODEL=claude-haiku-4-5-20251001`, `ANTHROPIC_MAX_TOKENS=4096`,
+`BANK_REFILL_ENABLED=false`, `BANK_REFILL_BATCH_SIZE=30` y
+`BANK_GENERATION_MAX_ROUNDS=3`. No hay selección ni respaldo de OpenRouter.
+Sus variables antiguas pueden permanecer en archivos privados, pero Compose
+ya no las pasa al backend y Settings las ignora. No se han editado secretos.
+Con reposición habilitada y sin clave Anthropic válida, la factoría falla antes
+de conectarse a MongoDB. Con el flag desactivado la aplicación sigue disponible.
+
+El modelo permanece configurable; el feedback explicativo no se implementa aquí.
+HTTPX sigue siendo necesario para Anthropic. El contexto TLS se extrae a
+`app/http_tls.py`: conserva `SSL_CERT_FILE`/CA de ejecución y verificación activa.
+Mantener el overlay privado `.tools/compose.ca.yml` que ya usa el entorno.
+No se modifica el replica set, el volumen, la base ni los snapshots existentes.
+
+Desde PowerShell, en la raíz, construir la imagen nueva (no recrea MongoDB):
+
+```powershell
+docker compose build backend
+```
+
+Previsualización sin publicación, con el prompt activo del banco y el mismo
+colector de rondas que el worker:
+
+```powershell
+docker compose run --rm --no-deps backend python -m scripts.preview_generation --cantidad 30 --modo lote
+```
+
+`--modo diagnostico` conserva una sola llamada; `--guardar-texto` conserva el
+diagnóstico de texto en `.tools` del contenedor, sin claves/cabeceras. Tokens,
+modelo, ID, stop_reason y rechazos por campo/regla siguen disponibles. Para
+conservar el texto en Windows montar explícitamente una carpeta privada `.tools`.
+No se ha ejecutado ninguna de estas llamadas reales durante este cambio.
+
+Para **un único trabajo automático controlado**, mantener el servidor con el
+flag false; reservar antes un intento de Present Simple A1 desde Vue para tener
+Progreso. Obtener en Mongo Express el `_id` del usuario (no el del intento).
+Sin `--ejecutar`, el comando siguiente solo consulta y muestra cursor, restantes,
+umbral y publicado_hasta; no crea tareas ni llama al proveedor:
+
+```powershell
+$alumnoId = 'SUSTITUIR_POR_ID_HEXADECIMAL_DE_24_CARACTERES'
+docker compose run --rm --no-deps backend python -m scripts.refill_once --usuario-id $alumnoId
+```
+
+Si quedan 20 o menos y no hay tarea pendiente/en curso/en error, ejecutar
+**una sola vez**, únicamente cuando se quiera consumir API y publicar:
+
+```powershell
+docker compose run --rm --no-deps backend python -m scripts.refill_once --usuario-id $alumnoId --ejecutar
+```
+
+Utiliza request/claim/process del worker real, limitado al banco Present Simple A1,
+sin iniciar su bucle. Un trabajo puede necesitar hasta tres llamadas/rondas; no
+equivale necesariamente a una sola llamada LLM. Una tarea previa sin completar
+bloquea este ensayo: revisarla antes, no borrar ni reiniciar campos a ciegas.
+El resultado debe ser completada, publicado_hasta anterior +30 y métricas de 30
+válidas, con 21/6/3 en v4. Progreso debe conservar los cursores previos. Un fallo
+o lote incompleto deja el banco intacto y devuelve error; no publica parcialmente.
+No hay autoprogramación de otros trabajos ni activación persistente del servidor.
+Se conserva el prompt/ficha activos; el comando no activa ni modifica versiones.
+
+Para que Vue sirva el nuevo código posteriormente:
+
+```powershell
+docker compose up -d --no-deps backend
+```
+
+Solo tras decidir habilitar el funcionamiento continuo, cambiar manualmente
+`BANK_REFILL_ENABLED=true` y recrear el backend con ese último comando. Esto ya
+no está limitado a un trabajo y puede consumir API de nuevo al alcanzar el umbral.
 
 Nota posterior a fase 3 (2026-11-17): la reposición usa un proveedor inyectable.
 El arranque habitual no tiene proveedor ni worker activado; no se habilita una
@@ -744,3 +854,230 @@ docker compose run --rm --no-deps backend python -m scripts.preview_openrouter -
 Si v4 ya está actualizada no hace falta reactivarla: este ajuste no cambia ficha
 ni plantilla. --modo diagnostico conserva una sola llamada y muestra rechazos sin
 intentar completar. --guardar-texto y su bind mount continúan disponibles.
+## Verificación de reposición con dos alumnos — demo aislada
+
+### Inspección del motor (2026-11-23)
+
+POST /tests confirma primero la transacción de reserva (snapshot + avance de
+Progreso) y después llama after_reservation. request compara publicado_hasta del
+banco menos la última secuencia reservada del alumno con el umbral (<=20).
+No cuenta documentos globales de BancoEjercicios ni usa respuestas/aciertos.
+Se presupone secuencia publicada contigua; reserve_test verifica y rechaza huecos.
+El alumno que va más avanzado puede disparar el lote compartido; otro alumno puede
+seguir recibiendo las mismas preguntas en su propio orden independiente.
+
+Bancos.reposicion es un único subdocumento. update_one atómico lo crea solamente
+si falta/es null o estaba completado; pending/running no se sustituyen por más
+peticiones. claim usa find_one_and_update para tomar pendiente, error reintentable
+o lease vencido, asigna token nuevo y lease. El worker funciona como tarea asyncio
+de la aplicación; la solicitud HTTP no espera al proveedor. Rondas consumidas son
+durables y timeout total de intento es menor que lease por configuración.
+Una caída puede causar otra llamada externa tras recuperar el lease; el fencing
+protege publicación única, no facturación exactamente una vez de un proveedor.
+
+publish relee propiedad/token, ficha, duplicados, cantidad y cuotas dentro de la
+transacción; inserta N preguntas con secuencia publicado_hasta+1..+N y actualiza
+frontera/estado/métricas juntos. No escribe Progreso ni Tests. Conserva el orden
+de candidatas aceptadas: NO intercala modalidades. Si el proveedor las agrupa,
+las secuencias también quedan agrupadas; 21/6/3 por lote no garantiza mezcla en
+un intento de diez. Reservar mueve cursor; entregar/retomar no, descartar consume.
+
+Al agotar antes de publicar, POST /tests devuelve 409 banco_reponiendo y el mensaje
+Estamos preparando más preguntas para este tema, tanto pendiente como en_curso.
+No crea intento ni avanza cursor. Publicación terminada permite volver a solicitar
+desde cursor+1. El error de reposición usa reposicion_fallida; sin proveedor no
+se presenta como una generación activa. Error terminal no se convierte en nueva
+tarea con cada petición. Se conservan límites y lógica de recuperación existente.
+
+**Discrepancia de configuración, no corregida en esta verificación:** create_app
+normal solo selecciona OpenRouter si BANK_REFILL_ENABLED y OPENROUTER_API_KEY.
+Anthropic directo está disponible en preview/inyección, pero todavía no se elige
+como worker habitual a partir de ANTHROPIC_API_KEY. Antes de activar reposición
+real con Anthropic hay que acordar/conectar esa selección; estas pruebas no la
+validan ni habilitan. No se cambia la factoría de producción en este encargo.
+
+### Arranque manual reproducible sin tokens
+
+Desde PowerShell en la raíz, con Docker Desktop. El comando usa proyecto y red
+propios, MongoDB tmpfs y base trainer_demo_refill. No monta volumen ni credenciales
+reales; ambas claves LLM se fijan vacías. Backend/MongoDB quedan en red interna
+sin salida externa; solo Vue y Mongo Express tienen además red de acceso a Windows.
+La factoría de demo vive exclusivamente en backend/tests, exige flag de demo,
+base exclusiva, flag de reposición y ausencia de claves. No es proveedor de fallback.
+
+```powershell
+docker compose -p trainer-refill-demo -f compose.refill-demo.yml -f .tools/compose.ca.yml up -d --build --wait
+```
+
+El overlay de CA local se reutiliza solo para construir/montar confianza, como en
+el entorno existente. El .env habitual permanece con BANK_REFILL_ENABLED=false;
+solo el contenedor demo recibe true. La demo usa 90 segundos de retardo simulado
+(timeout180/lease210) para observar el estado activo, sin llamadas HTTP a LLM.
+
+- Vue demo: http://localhost:15173
+- Mongo Express demo: http://localhost:18081
+- Acceso administrativo de DEMO: demo_viewer / demo_viewer_local_only.
+- Base: trainer_demo_refill. Estas credenciales públicas son solo para datos ficticios
+  efímeros en localhost; no son credenciales del entorno normal.
+
+1. Abrir Vue demo en una ventana normal y otra privada. Registrar dos alumnos
+   distintos, seleccionar Inglés y su curso mediante desplegables e iniciar sesión.
+2. En Mongo Express elegir trainer_demo_refill. Ver BancoEjercicios=30 y Bancos
+   publicado_hasta=30; no editar ni borrar documentos durante el ensayo.
+3. Alumno A crea primer intento: preguntas 1–10 y cursor10. Quedan20: se programa
+   tarea, pasa a en_curso y espera90s. El formulario vuelve sin esperar la generación.
+4. Antes de esos90s, alumno B crea primer intento: mismo bloque1–10 en su propio
+   cursor10. Consultar Bancos.reposicion.generacion_id: sigue siendo la misma tarea.
+   Compartir preguntas entre alumnos es correcto; no se repiten dentro de cada cursor.
+5. Esperar publicación y recargar Mongo Express: BancoEjercicios pasa de30 a60,
+   secuencias31–60 contiguas, origen llm con modelo demo-sin-red/proveedor simulado,
+   validación pedagógica automática. ultima_generacion informa30 válidas y v4.
+   Es contenido sintético para probar infraestructura, no evaluación lingüística.
+6. Progreso permanece10 para ambos si no crearon más intentos. Entregar un intento
+   no cambia ese valor; crear el siguiente sí lo mueve a20 y entrega11–20.
+7. Para observar agotamiento pendiente: con A completar/crear tres intentos antes
+   de los90s (pueden entregarse vacíos). Al acabar el tercero, cursor30 y banco30;
+   solicitar otro muestra preparación, no genera intento ni mueve cursor. Tras
+   publicar, reintentar recibe31–40. B continúa desde su propio cursor, sin saltos.
+8. Si con banco60 un alumno llega a cursor40, quedan20 y se solicita legítimamente
+   OTRO lote. No confundir esta nueva tarea con duplicación de la tarea anterior.
+
+La demo publica en orden de proveedor: el bloque nuevo comienza con21 afirmativas,
+continúa con6 negativas y termina con3 interrogativas. No se ha añadido intercalado.
+El seed de demo es idempotente; si se reutiliza sin reiniciar conserva usuarios e
+intentos previos de la demo. Para resetear, detener todo el proyecto demo y arrancar
+otra vez; tmpfs se pierde al retirar MongoDB:
+
+```powershell
+docker compose -p trainer-refill-demo -f compose.refill-demo.yml -f .tools/compose.ca.yml down
+```
+
+No ejecutar down del proyecto normal ni borrar su volumen. La demo se arrancó y
+verificó con HTTP200 en Vue y proxy /api/health y HTTP401 en Mongo Express sin
+credenciales; se retiró después del ensayo. No se realizó una prueba manual de
+clics en navegador: el flujo completo está probado por API con MongoDB real aislado.
+## Diagnóstico seguro de OpenRouter HTTP 402
+
+El adaptador antes descartaba el cuerpo de cualquier estado distinto de200. Ahora
+solo para402 extrae message, code, metadata.limit_source y metadata.remedy_hint.
+La CLI existente muestra el diagnóstico y sale con código1, sin reintentar ni
+hacer consultas remotas adicionales. Campos ausentes/tipos inesperados quedan null;
+HTML o cuerpos mayores de64KiB producen una explicación controlada sin volcado.
+Se omiten metadata.raw, cabeceras, IDs y campos ajenos a la lista blanca. Se redactan
+secretos conocidos, patrones de claves/tokens/Authorization, URLs, emails e IDs.
+str(error) sigue siendo controlado; no se añaden logs o archivos con el cuerpo HTTP.
+
+Verificación local del 2026-11-23: Compose y backend en ejecución usan
+anthropic/claude-haiku-4.5, clave OpenRouter presente e idéntica entre ambos (comparada
+en memoria, sin imprimir valor/hash). El adaptador lee OPENROUTER_API_KEY para
+Authorization; no usa ANTHROPIC_API_KEY para OpenRouter. Conserva Anthropic como
+único proveedor, allow_fallbacks=false, TLS y comprobación BYOK en respuestas200.
+BANK_REFILL_ENABLED=false confirmado en Compose y contenedor normal.
+
+No se puede atribuir offline la causa concreta del402 previo ni inferir el
+workspace de una clave opaca. El test de credencial BYOK del panel no demuestra
+que esta petición de inferencia haya pasado todos los límites/rutas del workspace.
+Para una única prueba de generación real, con MongoDB disponible y .env normal:
+
+```powershell
+docker compose build backend
+docker compose run --rm --no-deps backend python -m scripts.preview_openrouter --proveedor openrouter --cantidad 1 --modo diagnostico
+```
+
+Ese comando realiza una sola llamada de generación, sin publicación. No bajar
+max_tokens, cambiar clave/modelo/ruta ni comprar créditos hasta examinar el resultado.
+limit_source identifica el origen cuando OpenRouter lo proporciona; si falta no se
+inventa la causa. Valores documentados incluyen openrouter_credits (financiación),
+openrouter_key_limit (límite de clave) y openrouter_in_flight_budget (presupuesto
+de llamadas en vuelo); mensajes/remedy_hint se muestran redactados, no se ejecutan.
+
+### Comprobar workspace, opcional y separado de la generación
+
+La documentación oficial del endpoint de metadatos de clave muestra workspace_id.
+Se añade un comprobador de solo lectura que compara el UUID esperado con el recibido,
+sin mostrar clave, etiqueta, IDs ni respuesta completa. No se ha ejecutado realmente.
+Sustituir UUID_DEL_WORKSPACE por el identificador del workspace donde está BYOK:
+
+```powershell
+docker compose run --rm --no-deps backend python -m scripts.check_openrouter_workspace --workspace-id UUID_DEL_WORKSPACE
+```
+
+Solo hace GET /api/v1/key (no una generación); devuelve http_status y
+workspace_coincide=true/false/null. null significa no verificable (por ejemplo,
+API omite workspace_id o falla autenticación), no workspace incorrecto. El comando
+no prueba por sí solo la salud de Anthropic BYOK; solo pertenencia de la clave.
+No solicita claves de gestión ni modifica la cuenta. Como alternativa, localizar
+el registro de la clave usada en el panel y comprobar su workspace frente al BYOK.
+No se realizan ambas consultas automáticamente durante el ensayo de una llamada.
+
+Fuentes oficiales revisadas:
+https://openrouter.ai/docs/guides/features/workspaces
+https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key
+https://github.com/OpenRouterTeam/docs/blob/main/api_reference/limits.mdx
+https://openrouter.ai/anthropic/claude-haiku-4.5
+
+## Ensayo del disparador automático — preparación del 2026-11-24
+
+Este ensayo sustituye la activación temporal del worker habitual. Reutiliza el
+MongoDB efímero de compose.test.yml en OTRO proyecto, sin modificar .env ni el
+volumen de fase3. El overlay compose.refill-trial.yml habilita el flag exclusivamente
+allí, con máximo un intento y tres rondas. Usa la clave Anthropic del .env local y
+la CA existente .tools/ca-bundle.pem, sin imprimirlas. No usar este overlay con el
+Compose normal. La ejecución real NO se ha realizado durante la preparación.
+
+Desde PowerShell, en la raíz, se puede preparar sin llamadas reales:
+
+```powershell
+$ensayo = @('-p', 'trainer-refill-trial', '-f', 'compose.test.yml', '-f', 'compose.refill-trial.yml')
+docker compose @ensayo build tests
+docker compose @ensayo up -d --wait mongodb-test
+```
+
+El comando predeterminado está bloqueado. Este control termina deliberadamente con
+código1 y «falta --autorizar-anthropic», sin cargar Settings, conectar o generar:
+
+```powershell
+docker compose @ensayo run --rm --no-deps tests
+```
+
+**Únicamente después de autorizar expresamente la llamada real**, ejecutar UNA vez:
+
+```powershell
+docker compose @ensayo run --rm --no-deps tests python -m scripts.trial_automatic_refill --autorizar-anthropic
+```
+
+La opción autoriza un trabajo que puede consumir hasta tres llamadas de generación;
+no significa una llamada única. Se crea una base nueva trainer_refill_trial con v4,
+30 preguntas iniciales de ensayo y dos alumnos ficticios. Las peticiones reales de
+la API se ejecutan en proceso mediante ASGITransport; este ensayo no abre Vue ni
+prueba Nginx. No copia cuentas/preguntas/progreso del entorno habitual.
+
+Secuencia: reserva de A deja cursor10 y20 restantes → tarea pendiente; reserva de B
+crea su propio cursor10, conserva generacion_id → se arranca el worker real y se
+espera un resultado terminal. La pausa inicial permite observar el disparo de ambos
+sin empezar a consumir API antes de comprobar la tarea única. La concurrencia con
+tarea en_curso/varios workers y el límite21/no disparo se verificaron con simulación,
+no se fuerzan mediante más llamadas reales en este ensayo.
+
+El JSON final esperado contiene estado=completada, publicado_antes=30,
+publicado_despues=60, publicadas_nuevas=30, restantes_al_disparar=20, cursores_antes
+=cursores_despues=[10,10], misma_tarea_dos_alumnos=true, cursores_conservados=true,
+intentos_worker=1 y rondas_consumidas entre1 y3; modelo Anthropic, prompt_version4
+y tokens. Internamente verifica secuencias31–60, enunciados únicos, cuota21/6/3 y
+snapshots/contenido antiguo intactos. Un fallo/incompleto devuelve estado error y
+código1, sin publicación parcial ni reintento completo del trabajo.
+
+No repetir a ciegas: una base que ya contiene colecciones bloquea otra ejecución.
+El worker se detiene al terminar, y no se crean más intentos tras publicar. Conservar
+la salida antes de limpiar. Para detener/retirar exclusivamente el ensayo:
+
+```powershell
+docker compose @ensayo down --remove-orphans
+```
+
+Ese comando elimina el contenedor MongoDB de este proyecto y sus datos tmpfs de
+ensayo; no toca desarrollo. No usar el comando sin los argumentos $ensayo ni cambiar
+el nombre del proyecto. Ctrl+C interrumpe el cliente, pero no revoca una petición ya
+enviada al proveedor. Una futura repetición solo debe hacerse tras revisar el fallo,
+retirar el ensayo anterior y volver a autorizar el gasto. El .env habitual permanece
+con BANK_REFILL_ENABLED=false en todo momento.

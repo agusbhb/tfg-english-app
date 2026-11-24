@@ -40,14 +40,14 @@ MONGO_APP_PASSWORD=fake-app-password
 MONGODB_DB=trainer
 JWT_SECRET=fake-jwt-012345678901234567890123456789
 '@ | Set-Content -LiteralPath $taskSource -Encoding utf8
-    'OPENROUTER_API_KEY=sk-or-v1-existing-test-key-not-real' | Set-Content -LiteralPath $taskDestination -Encoding utf8
+    'ANTHROPIC_API_KEY=sk-ant-existing-test-key-not-real' | Set-Content -LiteralPath $taskDestination -Encoding utf8
     $taskBefore = (Get-FileHash -LiteralPath $taskSource).Hash
     & (Join-Path $PSScriptRoot 'Use-Phase3Environment.ps1') -Project trainer-mock -SourceEnv "$taskRelative/source.env" -DestinationEnv "$taskRelative/destination.env" | Out-Null
     $taskResult = Get-Content -LiteralPath $taskDestination -Raw
     foreach ($taskRequired in @(
         'COMPOSE_PROJECT_NAME=trainer-mock', 'MONGODB_VOLUME_NAME=trainer-mock_mongodb_data',
         'MONGODB_VOLUME_EXTERNAL=true', 'BANK_REFILL_ENABLED=false',
-        'OPENROUTER_API_KEY=sk-or-v1-existing-test-key-not-real', 'MONGODB_DB=trainer'
+        'ANTHROPIC_API_KEY=sk-ant-existing-test-key-not-real', 'MONGODB_DB=trainer'
     )) {
         if (-not $taskResult.Contains($taskRequired)) { throw 'El entorno generado no conserva la configuración esperada' }
     }

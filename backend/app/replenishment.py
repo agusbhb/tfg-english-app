@@ -27,6 +27,7 @@ from app.bank_contracts import (
 from app.generation import (
     collect_generation_batch,
     filter_bank_duplicates,
+    interleave_modalities,
     prepare_generation_context,
 )
 from app.models import AIModel
@@ -100,7 +101,7 @@ class BankRefiller:
     async def exhausted_status(self, bank_id, cursor):
         # No interpretar una tarea antigua como trabajo activo si falta el proveedor.
         if self.provider is None:
-            if self.settings.openrouter_api_key and not self.settings.bank_refill_enabled:
+            if self.settings.anthropic_api_key and not self.settings.bank_refill_enabled:
                 return "reposicion_desactivada", (
                     "Has agotado las preguntas publicadas de este banco. "
                     "La reposición automática está desactivada para el ensayo manual."
@@ -121,10 +122,11 @@ class BankRefiller:
             return "reposicion_fallida", "No se han podido preparar más preguntas para este tema."
         return "banco_agotado", "Has agotado las preguntas publicadas de este banco"
 
-    async def claim(self):
+    async def claim(self, bank_id=None):
         instant = now()
         document = await self.database.Bancos.find_one_and_update(
             {
+                **({"_id": bank_id} if bank_id is not None else {}),
                 "$or": [
                     {"reposicion.estado": "pendiente"},
                     {"reposicion.estado": "en_curso", "reposicion.lease_hasta": {"$lte": instant}},
@@ -132,7 +134,7 @@ class BankRefiller:
                         "reposicion.estado": "error",
                         "reposicion.reintento_en": {"$type": "date", "$lte": instant},
                     },
-                ]
+                ],
             },
             {
                 "$set": {
@@ -180,10 +182,13 @@ class BankRefiller:
                 raise NoNewQuestions("El lote no contiene preguntas nuevas")
             if len(accepted) != bank.reposicion.cantidad:
                 raise IncompleteBatch("El lote ha perdido candidatas antes de publicar")
-            if metrics.prompt_version >= 4 and modality_counts(accepted) != modality_distribution(
-                bank.reposicion.cantidad, bank.codigo_tema, bank.nivel_mcer_objetivo
-            ):
-                raise IncompleteBatch("La distribución no coincide al publicar")
+            if metrics.prompt_version >= 4:
+                if modality_counts(accepted) != modality_distribution(
+                    bank.reposicion.cantidad, bank.codigo_tema, bank.nivel_mcer_objetivo
+                ):
+                    raise IncompleteBatch("La distribución no coincide al publicar")
+                # Solo el lote nuevo, antes de asignar secuencias y dentro de la transacción.
+                accepted = interleave_modalities(accepted)
             errors = (
                 list(metrics.errores)
                 if len(accepted) == len(output.preguntas)

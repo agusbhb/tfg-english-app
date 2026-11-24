@@ -1,0 +1,70 @@
+# Proyecto, red y base exclusivos. No toma credenciales ni volúmenes de desarrollo.
+name: trainer-refill-demo
+services:
+  mongodb:
+    image: mongo:8.0.15
+    entrypoint: [bash, /opt/trainer/mongo-replica.sh]
+    environment:
+      MONGO_REPLICA_SET: trainer-demo
+      MONGO_REPLICA_HOST: mongodb:27017
+      MONGO_INITDB_ROOT_USERNAME: demo_admin
+      MONGO_INITDB_ROOT_PASSWORD: demo_admin_local_only
+      MONGODB_DB: trainer_demo_refill
+      MONGO_APP_USER: demo_app
+      MONGO_APP_PASSWORD: demo_app_local_only
+    tmpfs: [/data/db]
+    volumes:
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/01-app-user.js:ro
+      - ./docker/mongo-replica.sh:/opt/trainer/mongo-replica.sh:ro
+      - ./docker/mongo-replica-health.js:/opt/trainer/mongo-replica-health.js:ro
+    healthcheck:
+      test: [CMD, mongosh, --quiet, /opt/trainer/mongo-replica-health.js]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+  backend:
+    image: trainer-refill-demo-backend
+    build: ./backend
+    command: [python, -m, uvicorn, demo_refill_app:create_demo_app, --factory, --app-dir, tests, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      TRAINER_REFILL_DEMO: "1"
+      MONGODB_URI: mongodb://demo_app:demo_app_local_only@mongodb:27017/trainer_demo_refill?authSource=trainer_demo_refill&replicaSet=trainer-demo
+      MONGODB_DB: trainer_demo_refill
+      JWT_SECRET: demo_only_jwt_secret_never_for_real_data_0123456789
+      ALLOWED_ORIGINS: '["http://localhost:15173","http://127.0.0.1:15173"]'
+      BANK_REFILL_ENABLED: "true"
+      BANK_REFILL_THRESHOLD: 20
+      BANK_REFILL_BATCH_SIZE: 30
+      BANK_REFILL_TIMEOUT_SECONDS: 180
+      BANK_REFILL_LEASE_SECONDS: 210
+      ANTHROPIC_API_KEY: ""
+    depends_on:
+      mongodb: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  frontend:
+    image: trainer-refill-demo-frontend
+    build: ./frontend
+    ports: [127.0.0.1:15173:80]
+    networks: [default, ui]
+    depends_on:
+      backend: {condition: service_healthy}
+  mongo-express:
+    image: mongo-express:1.0.2
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://demo_admin:demo_admin_local_only@mongodb:27017/?authSource=admin
+      ME_CONFIG_BASICAUTH_ENABLED: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: demo_viewer
+      ME_CONFIG_BASICAUTH_PASSWORD: demo_viewer_local_only
+    ports: [127.0.0.1:18081:8081]
+    networks: [default, ui]
+    depends_on:
+      mongodb: {condition: service_healthy}
+networks:
+  default:
+    internal: true
+  ui: {}

@@ -12,6 +12,7 @@ from jwt import InvalidTokenError
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from app import practice
+from app.anthropic import AnthropicProvider
 from app.config import Settings
 from app.database import create_client, initialize_database
 from app.generation import GenerationProvider
@@ -22,7 +23,6 @@ from app.models import (
     validate_academic_reference,
     validate_catalog,
 )
-from app.openrouter import OpenRouterProvider
 from app.replenishment import BankRefiller
 from app.reservations import BankExhausted
 from app.schemas import (
@@ -76,8 +76,8 @@ def create_app(
     settings: Settings | None = None, generation_provider: GenerationProvider | None = None
 ) -> FastAPI:
     settings = settings or Settings()
-    if generation_provider is None and settings.bank_refill_enabled and settings.openrouter_api_key:
-        generation_provider = OpenRouterProvider(settings)
+    if generation_provider is None and settings.bank_refill_enabled:
+        generation_provider = AnthropicProvider(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

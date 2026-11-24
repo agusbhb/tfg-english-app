@@ -9,7 +9,7 @@ from app.models import AIModel
 from app.replenishment import BankRefiller
 from scripts.activate_generation_prompt import activate
 from scripts.data_snapshot import snapshot
-from scripts.preview_openrouter import preview
+from scripts.preview_generation import preview
 
 pytestmark = pytest.mark.integration
 

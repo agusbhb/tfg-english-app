@@ -1,0 +1,28 @@
+# Overlay exclusivo de compose.test.yml. No usar junto al Compose de desarrollo.
+# El comando predeterminado se niega a generar sin --autorizar-anthropic.
+services:
+  tests:
+    working_dir: /workspace/backend
+    build:
+      secrets: [pip_ca_bundle]
+    secrets: [pip_ca_bundle]
+    command: [python, -m, scripts.trial_automatic_refill]
+    environment:
+      MONGODB_URI: mongodb://trainer_test:local_isolated_test_app_password@mongodb-test:27017/?authSource=admin&replicaSet=trainer-test
+      MONGODB_DB: trainer_refill_trial
+      JWT_SECRET: isolated_trial_only_jwt_secret_01234567890123456789
+      BANK_REFILL_ENABLED: "true"
+      BANK_REFILL_THRESHOLD: 20
+      BANK_REFILL_BATCH_SIZE: 30
+      BANK_GENERATION_MAX_ROUNDS: 3
+      BANK_REFILL_MAX_ATTEMPTS: 1
+      BANK_REFILL_TIMEOUT_SECONDS: 180
+      BANK_REFILL_LEASE_SECONDS: 210
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      ANTHROPIC_MAX_TOKENS: ${ANTHROPIC_MAX_TOKENS:-4096}
+      SSL_CERT_FILE: /run/secrets/pip_ca_bundle
+secrets:
+  pip_ca_bundle:
+    # CA local ya utilizada por .tools/compose.ca.yml, sin credenciales.
+    file: .tools/ca-bundle.pem

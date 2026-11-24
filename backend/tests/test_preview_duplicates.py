@@ -7,7 +7,7 @@ from bson import ObjectId
 from app.generation import GenerationResponse, sentence_key
 from app.models import AIModel
 from scripts.data_snapshot import snapshot
-from scripts.preview_openrouter import preview
+from scripts.preview_generation import preview
 
 
 @pytest.mark.parametrize(

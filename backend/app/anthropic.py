@@ -6,8 +6,8 @@ import httpx
 from pydantic import ValidationError
 
 from app.generation import GenerationResponse
+from app.http_tls import tls_context
 from app.models import AIModel
-from app.openrouter import tls_context
 from app.prompts import validate_generation_envelope, validate_generation_output
 
 ENDPOINT = "https://api.anthropic.com/v1/messages"
@@ -248,9 +248,8 @@ class AnthropicProvider:
                 id_llamada=data.get("id") or response.headers.get("request-id"),
                 modelo_utilizado=data["model"],
                 proveedor_utilizado="Anthropic",
-                # No inventar precios ni tratar una llamada directa como BYOK de OpenRouter.
+                # No estimar costes sin una política de precios explícita.
                 coste_estimado_usd=None,
-                byok_confirmado=None,
             )
         except ValidationError as error:
             diagnostic["errores"] = validation_details(error, redact, prefix="metadatos.")

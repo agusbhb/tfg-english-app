@@ -2574,3 +2574,273 @@ Starlette/TestClient. No se repite frontend: no cambia código ni contrato de pr
 No hay dependencias nuevas. BANK_REFILL_ENABLED=false comprobado. Sin llamadas reales,
 modificaciones de datos de desarrollo, README ni operaciones Git de escritura.
 Guía, seguimiento y decisión existente actualizados; prueba real pendiente del autor.
+## 2026-11-23 — Integración cursor/banco/reposición y demo sin proveedor real
+
+### Inspección sin cambios iniciales
+
+Repositorio inicialmente limpio. Se revisaron reservas, endpoints, worker, lease,
+colector, publicación, pruebas y Compose. Umbral tras confirmar reserva: frontera
+del banco publicado_hasta menos última secuencia del alumno <=20. Cola durable
+embebida en Bancos con update atómico, claim con token/lease y recuperación al vencer.
+La publicación corta inserta secuencias contiguas y frontera/métricas juntas, sin
+cambiar Progreso. El orden del proveedor se conserva: no hay intercalado de modalidades.
+
+No se detectaron fallos de integridad en escenarios probados ni se cambió producción.
+Se deja explícito que la factoría habitual solo selecciona OpenRouter con flag/clave;
+Anthropic directo validado en preview aún requiere conectar su selección para usarlo
+como worker real. No se hace esa ampliación de configuración durante la verificación.
+La garantía de publicación única no implica llamada externa exactamente una vez
+tras una caída/recuperación de lease; contador durable limita las llamadas.
+
+### Pruebas ejecutadas
+
+Nueva test_refill_cursor_integration.py comprueba con v4 dos usuarios y dos workers:
+31 iniciales/cursor10 ->21 restantes sin tarea; 30/cursor10 ->20 con una tarea;
+peticiones concurrentes y repetidas conservan generacion_id y una llamada del trabajo;
+30 nuevas válidas (21/6/3), secuencias contiguas sin duplicados; cursores idénticos
+antes/después de publicar; bloques siguientes11–20,21–30,31–40 por alumno sin saltos.
+Al llegar a40 sobre banco60 puede programarse otro trabajo legítimo; no se considera
+una llamada redundante del anterior. Agotamiento con tarea pendiente y en curso:
+409 banco_reponiendo, sin nuevo intento/avance; después publicar permite11–20.
+
+Suite completa backend: 350 aprobadas en 74,72 s. Las tres nuevas se repitieron
+tras ampliar la comprobación de pendiente/en_curso: 3 aprobadas en 2,70 s.
+Las regresiones existentes comprueban proveedor fallido, lote incompleto sin
+publicación, reintentos, lease recuperado y trabajador antiguo sin poder publicar.
+Cobertura backend/app: 1467/1528 = 96,01 % de líneas; no ramas. Ruff/formato correctos
+(39 archivos), sin cambios Vue ni repetición de suite frontend. Advertencia conocida
+Starlette/TestClient. Se construyeron imágenes demo; frontend reutilizó build cacheado.
+
+### Demo aislada y comprobación real de arranque
+
+Se añade compose.refill-demo.yml y tests/demo_refill_app.py. Factoría solo de tests,
+proveedor simulado inyectado, datos sintéticos, v4, treinta iniciales y90s de retardo.
+Guardas de base/flag/ausencia de claves. Claves API vacías, MongoDB tmpfs exclusivo,
+redes propias y puertos15173/18081. Backend y Mongo en red interna; Vue/Mongo Express
+tienen red de acceso a Windows. No se usan datos ni volumen de desarrollo.
+
+Se detectaron/corrigieron dos problemas solo de la demo: Uvicorn como consola no
+incluía /app en su path al cargar módulo de tests (se usa python -m uvicorn), y la
+red interna no publicaba puertos en Docker Desktop (se añadió red de acceso solo
+a Vue/Mongo Express). No hubo cambios en código de producción.
+
+Arranque comprobado: Vue200, /api/health200 y MongoExpress401 sin credenciales.
+Inventario de la demo: trainer_demo_refill,30 preguntas,0 usuarios/cursores y v4 activa;
+ambas claves LLM ausentes. No se ha probado la UI con clics: el flujo está cubierto
+por pruebas API. Se documentan dos ventanas de navegador y los campos a observar
+en Mongo Express, y se retira después el proyecto efímero de demo/pruebas.
+BANK_REFILL_ENABLED=false normal comprobado antes y después; sin llamadas reales,
+modificaciones de datos/volumen normal, Git de escritura ni README. Guía y seguimiento
+actualizados. Riesgo pendiente: seleccionar proveedor Anthropic antes de habilitar
+reposiciones reales; no confundir diversidad del lote con la de cada intento.
+## 2026-11-23 — Diagnóstico HTTP402 seguro de OpenRouter y workspace
+
+Se confirmó el punto de pérdida de información: OpenRouterProvider descartaba
+cuerpo HTTP no200. Ahora OpenRouterError admite diagnostic opcional compatible con
+el handler ya existente en preview_openrouter. Para402 solo se extraen message/code
+y metadata.limit_source/remedy_hint (tipos escalares admitidos), con límite64KiB y
+longitud de texto1000. Se descartan otros campos y se redactan todos los SecretStr
+configurados, claves/tokens/Authorization Basic/Bearer, emails, URLs e identificadores.
+No se escriben logs, archivos ni cabeceras; str(error) continúa controlado.
+Errores de otros estados y prohibición de reintentar permanecen.
+
+Verificación local de solo lectura: modelo Compose/runtime idéntico
+anthropic/claude-haiku-4.5, clave OpenRouter presente e idéntica entre ambos por
+comparación en memoria (sin imprimir clave, hash o fragmentos). El código usa esa
+clave en Authorization, restringe proveedor a Anthropic sin fallback, y mantiene
+TLS/BYOK. BANK_REFILL_ENABLED=false en configuración y contenedor normal.
+No se ha comprobado saldo, clave/workspace ni causa real del402 contra la API.
+El diagnóstico anterior no permite distinguir esas causas y no se recomiendan compras.
+
+Documentación primaria revisada: modelo oficial de OpenRouter, aislamiento de claves
+BYOK por workspace y límites. La documentación fuente oficial de GET /api/v1/key
+incluye workspace_id. Se añade scripts/check_openrouter_workspace.py, opcional,
+solo lectura: compara contra UUID esperado y devuelve únicamente coincidencia y
+estado HTTP. No se usa automáticamente ni imprime ID/label/clave; null indica
+no verificable. Solo se ha probado con HTTPX MockTransport. No requiere credencial
+de gestión ni altera proveedores, workspaces o límites. Fuente documentada en guía.
+
+Pruebas finales pertinentes: 83 aprobadas sin red en test_openrouter.py y
+test_anthropic.py; cinco integraciones MongoDB excluidas. Diecinueve casos nuevos:
+variantes de fuente402, ausencia de campos, tipos malformados, HTML, cuerpo grande,
+redacción de secretos/Authorization/emails/IDs, CLI y única llamada, y comprobación
+workspace coincidente/distinto/ausente/inválido. Cobertura del módulo openrouter:
+108/109 = 99,08 % de líneas; no cobertura global. La primera invocación de cobertura
+usó ruta de archivo como módulo y no produjo informe; se corrigió a app.openrouter
+antes del resultado final. Se corrigió longitud de línea en test antes de Ruff final.
+Ruff/formato correctos (40 archivos), imagen backend construida, ayuda del nuevo
+comando ejecutada sin red. Advertencia conocida de Starlette/TestClient.
+
+Archivos: app/openrouter.py, tests/test_openrouter.py y nuevo script de comprobación.
+Guía/devlog/seguimiento actualizados; sin dependencias, cambios Docker/.env,
+publicación, llamadas reales, compra de créditos, README ni Git de escritura.
+Se conservan los cambios no confirmados de la demo anterior. Prueba real de una
+pregunta pendiente del autor con --proveedor openrouter --modo diagnostico.
+## 2026-11-23 — Anthropic directo como proveedor único de generación
+
+### Objetivo y decisión
+Simplificar el flujo operativo por decisión del autor: usar ANTHROPIC_API_KEY
+con el adaptador directo ya existente. El feedback sigue pendiente; no se añade.
+Se mantiene la interfaz GenerationProvider y su inyección para pruebas aisladas.
+
+### Implementación
+- La factoría de FastAPI selecciona AnthropicProvider cuando BANK_REFILL_ENABLED
+  está activo. Falta/clave marcador causa un error claro sin fallback; con false
+  el servidor arranca sin proveedor y no simula reposición pendiente en Vue.
+- Modelo configurable ANTHROPIC_MODEL, Haiku 4.5 por defecto. Se elimina OpenRouter
+  de Settings, Compose y .env.example. Archivos .env y schema2/schema3 intactos.
+- Se retiran app/openrouter.py, test_openrouter.py y los comprobadores exclusivos
+  de TLS/workspace OpenRouter. El contexto TLS necesario se extrae a http_tls.py;
+  HTTPX y el overlay CA existente se conservan. Sin dependencias nuevas.
+- preview_openrouter se renombra preview_generation y pierde --proveedor. Sigue
+  leyendo el prompt activo y usa el mismo colector que la reposición: validación
+  por pregunta, deduplicación por enunciado, cuotas y rondas. Se conservan tokens,
+  ID, stop_reason y diagnóstico seguro/captura opcional de texto.
+- Se elimina byok_confirmado del informe/transporte transitorio. No era un campo
+  persistido en GenerationMetrics; no se migran ni reinterpretan registros antiguos.
+- refill_once consulta primero y requiere --ejecutar para un trabajo real de
+  Present Simple A1. Usa request/claim/process sin bucle; claim admite restringir
+  banco. Respeta umbral, tareas existentes, lease y publicación exacta transaccional.
+  Puede necesitar varias llamadas dentro de las rondas permitidas. Flag false.
+- Scripts de adopción conservan ahora la configuración Anthropic existente. La
+  prueba PowerShell utiliza valores ficticios y no toca el .env del usuario.
+
+### Comprobaciones efectivamente ejecutadas
+- Suite completa: 327 passed, 1 advertencia Starlette/TestClient, 79,02 s.
+- MongoDB 8.0.15 replica set en proyecto trainer-anthropic-only-tests, tmpfs y bases
+  aleatorias trainer_test_*. Proveedor HTTPX MockTransport o inyectado, sin API real.
+- Nuevas regresiones (10 casos): TLS, ausencia/clave vacía/marcador sin fallback,
+  flag false con clave, factoría directa + dos alumnos + 30 publicadas frente a
+  fallo HTTP503 sin publicación, ciclo único consulta/ejecución frente a fallo,
+  previsualización bloqueada si reposición continua está activa.
+- Se conservan los escenarios generales de concurrencia, umbral 21/20, agotamiento,
+  cuotas, rondas incompletas, leases, recuperación, autorización y autoguardado.
+- Cobertura de líneas backend/app: 1404/1464 = 95,90 %, informe XML generado.
+  No es cobertura de ramas, de scripts ni del frontend. El recuento de pruebas
+  disminuye al retirar las exclusivas de OpenRouter, no por omitir suites restantes.
+- Ruff y formato correctos; Compose normal y demo válidos; imagen backend construida.
+  Adopción PowerShell simulada correcta, con conservación de clave ficticia y rechazo
+  sin volumen. BANK_REFILL_ENABLED=false confirmado en .env sin imprimir secretos.
+
+### Límites y revisión manual
+No se ejecutan llamadas Anthropic ni se altera la base o el volumen de desarrollo.
+La imagen nueva no se despliega sobre el contenedor normal durante este trabajo.
+No se valida CI/Sonar remoto; frontend no cambia ni se vuelve a ejecutar su suite.
+Guía vigente en COPIA_RESTAURACION.md: comandos nuevos, prueba única y diferencias
+frente al funcionamiento continuo. Actualizados seguimiento y ampliación ADR-011;
+ambos documentos siguen excluidos de Git por la configuración preexistente.
+No se modifica README ni se realizan staging, commits, pushes o cambios de rama.
+
+Comprobación final del mismo cambio: las diez regresiones de test_provider_runtime
+se repitieron tras añadir modelo/prompt_version al resumen JSON del ciclo único y
+pasaron (3,85 s). Ruff/formato siguen correctos. El validador de cobertura resuelve
+los 17 archivos de backend/app. Compose normal/demo válidos; sin coincidencias de
+secretos locales en archivos nuevos/modificados no ignorados y git diff --check
+correcto. Flag false verificado también en el contenedor habitual. README intacto,
+rama develop sin staging. La imagen final se reconstruyó sin desplegar el backend.
+
+## 2026-11-23 — Intercalado determinista de modalidades al publicar
+
+### Objetivo
+Evitar que las candidatas agrupadas por el proveedor se publiquen como largas
+series homogéneas que reduzcan la variedad de los intentos secuenciales de diez.
+
+### Implementación y decisión
+Se añade interleave_modalities en app/generation.py, llamada únicamente desde el
+punto común BankRefiller.publish para prompts v4 o posteriores. Se ejecuta después
+de comprobar duplicados, cantidad exacta y cuotas del tema/nivel, antes de asignar
+las secuencias del lote nuevo, dentro de la misma transacción de publicación.
+
+Se emplean turnos ponderados suaves: por posición, cada modalidad acumula su cuota;
+se extrae la pregunta de la cola no vacía con mayor saldo y se resta el tamaño del
+lote de su saldo. Empates: afirmativa, negativa, interrogativa. Pesos = cantidades
+enteras ya validadas del lote, sin añadir porcentajes globales ni recalcular cuotas.
+Se conserva FIFO dentro de cada modalidad y se reordenan referencias a los mismos
+objetos, sin modificar texto, respuestas, distractores ni metadatos. Sin aleatoriedad,
+dependencias nuevas, migraciones ni cambios de prompt/ficha, frontend o reservas.
+
+Para 21/6/3 se repite tres veces A,A,N,A,A,I,A,A,N,A: cada bloque del lote de diez
+contiene 7/2/1 y no hay más de tres afirmativas consecutivas. Cantidades pequeñas,
+cuotas cero y otros repartos se mantienen exactos; no se garantiza 7/2/1 para
+cualquier cantidad o proporción. No se altera un tramo anterior del banco para
+mezclarlo con el lote nuevo. Los documentos publicados, los snapshots y Progreso
+no se escriben durante este reordenamiento. Lotes legados sin modalidad conservan
+su orden. La previsualización no publica y conserva el orden de candidatas del
+colector; la ordenación definitiva se aplica al publicar, también con refill_once.
+
+### Comprobaciones efectivamente ejecutadas
+- 15 pruebas unitarias nuevas: 21/6/3, bloques de diez, rachas máximas, tamaños
+  1/2/3/5/10/13/30/31/50, cuotas cero, otros temas/repartos, desempates, determinismo,
+  estabilidad FIFO, identidad/contenido sin mutaciones y rechazo de modalidad ausente.
+- Suite backend completa: 342 passed, una advertencia conocida de Starlette/TestClient,
+  79,55 s. Cobertura de líneas de backend/app: 1421/1481 = 95,95 %; XML generado.
+- Integración reforzada: proveedor agrupado, publicación 30 consecutivas con tres
+  bloques 7/2/1; documentos previos y snapshots idénticos, cursores independientes
+  intactos. Comparación íntegra de contenido y trazabilidad publicados para 5 y 30.
+- Ruff/formato correctos, construcción de imagen backend y git diff --check correctos.
+- MongoDB replica set tmpfs exclusivo trainer-interleaving-tests con bases aleatorias;
+  proveedores simulados. Sin llamadas reales ni cambios en el volumen de desarrollo.
+- BANK_REFILL_ENABLED=false comprobado en .env y en el contenedor habitual.
+
+### Seguimiento
+Guía operativa, seguimiento general y ampliación de la decisión técnica actualizados.
+No se crea otro ADR para esta función acotada. No hace falta activar otra vez v4:
+basta desplegar la imagen nueva cuando el autor decida. No se recrea aquí el backend
+habitual. Sin cambios de README ni operaciones Git de escritura; se conservan los
+cambios previos no confirmados de Anthropic y la demo. CI remoto no ejecutado.
+
+## 2026-11-24 — Ensayo aislado del disparador automático con Anthropic
+
+El ensayo real anterior con refill_once, comunicado por el autor (10→40 y treinta
+válidas), comprueba el worker/publicación, pero no el disparo HTTP: refill_once
+llama directamente a request/claim/process. Con BANK_REFILL_ENABLED=false, create_app
+no instala proveedor y after_reservation no crea tarea; el aviso de agotamiento
+recibido es el comportamiento previsto. No hace falta corregir ese mensaje.
+
+La ruta POST /tests confirma el snapshot/cursor y después llama after_reservation.
+El umbral es publicado_hasta - última secuencia reservada del alumno <=20. Un único
+subdocumento Bancos.reposicion se crea con update_one condicional; pendiente o en
+curso no se reemplaza por otro alumno. El worker reclama con token/lease, llama
+al proveedor fuera de la transacción y publica el lote exacto en otra transacción.
+El lease protege publicación única, no una facturación exactamente una vez tras
+caídas. La configuración normal tiene reintentos: no conviene habilitarla para
+un ensayo que pretende estar limitado a un único trabajo.
+
+### Preparación implementada (sin tocar producción)
+- compose.refill-trial.yml es un overlay EXCLUSIVO de compose.test.yml. Proyecto
+  trainer-refill-trial, MongoDB replica set tmpfs sin puertos ni volumen de desarrollo,
+  base trainer_refill_trial. CA local de .tools/ca-bundle.pem usada en build y ejecución;
+  TLS permanece activo. Clave Anthropic solo por interpolación del .env privado.
+- scripts/trial_automatic_refill.py se niega a ejecutar por defecto. Exige opción
+  --autorizar-anthropic y verifica base, hostname, usuario y replica set de pruebas;
+  rechaza una base con colecciones existentes y no borra ni reinicia sus datos.
+- El arnés usa las rutas reales con HTTPX ASGITransport y el lifespan real de FastAPI,
+  sin puertos HTTP, Vue ni Nginx. Crea contenido de ensayo (30 publicadas), activa v4
+  solo allí, registra dos alumnos ficticios y hace login/reserva mediante la API.
+- Detiene el worker durante preparación y las dos peticiones para observar la tarea
+  pendiente: ambos cursores llegan a10, quedan20, y el generacion_id es el mismo.
+  Después arranca BankRefiller.run real; no llama a request/claim/process manualmente
+  para crear el disparo. Comprueba publicación30→60, secuencias31–60, duplicados,
+  cuotas21/6/3 y conservación íntegra de cursores/snapshots/preguntas previas.
+- Un intento de worker, hasta tres rondas, timeout180s y lease210s. Detiene el worker
+  tras éxito/error; no hace más reservas después. La base usada bloquea una segunda
+  ejecución del ensayo. Una cancelación no anula una petición ya enviada al proveedor.
+
+### Evidencia efectivamente ejecutada
+62 pruebas pertinentes aprobadas (23,23 s), incluidas ocho nuevas del arnés y suites
+de umbral21/20, dos alumnos/workers, leases/concurrencia, intercalado y proveedor.
+Solo MockTransport/proveedores simulados y MongoDB aislado trainer-trigger-prep.
+Regresiones nuevas: éxito con30 y cursores10/10 intactos, HTTP503 con una llamada y
+cero publicadas, lote incompleto con tres rondas y cero publicación parcial,
+protección de entorno/límites, autorización y bloqueo de segunda ejecución.
+Las ocho nuevas se repitieron tras ajustar diagnóstico/resumen: aprobadas (2,55 s).
+Ruff/formato (42 archivos), sintaxis Compose y construcción de imagen del ensayo
+correctos. CLI ejecutada sin autorización: bloqueo confirmado antes de Settings,
+conexión o llamada LLM. No se recalcula cobertura ni se repite toda la suite backend,
+porque no se modifica app/ ni frontend. Advertencia conocida de Starlette/TestClient.
+
+Flag false comprobado en .env y contenedor habitual. Sin llamadas reales, escrituras
+en desarrollo, cambios de README ni operaciones Git de escritura. La reposición
+real del disparador queda PENDIENTE de autorización expresa y de revisar su informe.
+Procedimiento reproducible y limpieza en COPIA_RESTAURACION.md. Se conserva el estado
+previo no confirmado del repositorio; seguimiento actualizado.
