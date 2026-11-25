@@ -21,10 +21,12 @@ from app.bank_contracts import (
     GenerationMetrics,
     GenerationOutput,
     GenerationReference,
+    GenerationRoundMetrics,
     modality_counts,
     modality_distribution,
 )
 from app.generation import (
+    GenerationBatch,
     collect_generation_batch,
     filter_bank_duplicates,
     interleave_modalities,
@@ -284,19 +286,83 @@ class BankRefiller:
 
     async def process(self, bank):
         metrics = None
+        batch = None
+        previous = bank.ultima_generacion
+        if previous is not None and previous.generacion_id != bank.reposicion.generacion_id:
+            previous = None
         started = monotonic()
 
-        async def record_failure(code):
-            failed_metrics = (
-                metrics.model_copy(
-                    update={
-                        "latencia_ms": int((monotonic() - started) * 1000),
-                    }
+        def accumulated_metrics():
+            if metrics is None or batch is None:
+                return metrics
+            rounds = [
+                GenerationRoundMetrics.model_validate(
+                    {k: v for k, v in r.items() if k in GenerationRoundMetrics.model_fields}
                 )
-                if metrics is not None
-                else None
-            )
-            await self.fail(bank, code, failed_metrics)
+                for r in batch.rounds
+            ]
+            changes = {
+                "latencia_ms": (previous.latencia_ms if previous else 0)
+                + int((monotonic() - started) * 1000),
+                "preguntas_recibidas": (previous.preguntas_recibidas if previous else 0)
+                + batch.received,
+                "preguntas_recibidas_completas": all(
+                    r["recibidas"] is not None for r in batch.rounds
+                )
+                and (previous is None or previous.preguntas_recibidas_completas is True),
+                "preguntas_validas": len(batch.questions),
+                "preguntas_rechazadas_contrato": (
+                    previous.preguntas_rechazadas_contrato if previous else 0
+                )
+                + batch.rejected,
+                "preguntas_descartadas_duplicadas": (
+                    previous.preguntas_descartadas_duplicadas if previous else 0
+                )
+                + batch.duplicate_count,
+                "preguntas_descartadas_cuota": (
+                    previous.preguntas_descartadas_cuota if previous else 0
+                )
+                + sum(r["descartadas_cuota"] for r in batch.rounds),
+                "rondas": (previous.rondas if previous else []) + rounds,
+                "rondas_consumidas": bank.reposicion.rondas_consumidas + len(rounds),
+                "errores": (
+                    (previous.errores if previous else [])
+                    + [
+                        GenerationError(
+                            codigo="pregunta_invalida",
+                            mensaje=(
+                                f"Ronda {r['ronda']}, índice {rejection['indice']}: "
+                                + "; ".join(
+                                    f"{issue['campo']}: {issue['motivo']}"
+                                    for issue in rejection["errores"]
+                                )
+                            )[:500],
+                        )
+                        for r in batch.rounds
+                        for rejection in r["rechazos_contrato"]
+                    ]
+                )[-49:],
+            }
+            for name in ("tokens_entrada", "tokens_salida", "coste_estimado_usd"):
+                current = batch.total(name)
+                old = getattr(previous, name) if previous else None
+                changes[name] = (
+                    (old + current if old is not None and current is not None else None)
+                    if previous
+                    else current
+                )
+                if name != "coste_estimado_usd":
+                    old_known = getattr(previous, name + "_conocidos") if previous else None
+                    if old_known is None:
+                        old_known = old
+                    known = [v for v in (old_known, batch.known_total(name)) if v is not None]
+                    changes[name + "_conocidos"] = sum(known) if known else None
+            if batch.trace is not None:
+                changes.update(batch.trace.model_dump())
+            return GenerationMetrics.model_validate({**metrics.model_dump(), **changes})
+
+        async def record_failure(code):
+            await self.fail(bank, code, accumulated_metrics())
 
         try:
             if bank.reposicion.intentos > self.settings.bank_refill_max_attempts:
@@ -311,6 +377,7 @@ class BankRefiller:
                 preguntas_recibidas=0,
                 preguntas_validas=0,
             )
+            batch = GenerationBatch(parameters.cantidad)
 
             async def before_call():
                 reserved = await self.database.Bancos.update_one(
@@ -342,32 +409,10 @@ class BankRefiller:
                         - bank.reposicion.rondas_consumidas,
                     ),
                     before_call=before_call,
+                    progress=batch,
+                    round_offset=bank.reposicion.rondas_consumidas,
                 )
-            metrics = metrics.model_copy(
-                update={
-                    "latencia_ms": int((monotonic() - started) * 1000),
-                    "tokens_entrada": batch.total("tokens_entrada"),
-                    "tokens_salida": batch.total("tokens_salida"),
-                    "coste_estimado_usd": batch.total("coste_estimado_usd"),
-                    "preguntas_recibidas": batch.received,
-                    "preguntas_validas": len(batch.questions),
-                    "preguntas_rechazadas_contrato": batch.rejected,
-                    "errores": [
-                        GenerationError(
-                            codigo="pregunta_invalida",
-                            mensaje=(
-                                f"Ronda {round_index + 1}, índice {rejection['indice']}: "
-                                + "; ".join(
-                                    f"{issue['campo']}: {issue['motivo']}"
-                                    for issue in rejection["errores"]
-                                )
-                            )[:500],
-                        )
-                        for round_index, round_ in enumerate(batch.rounds)
-                        for rejection in round_["rechazos_contrato"]
-                    ][:49],
-                }
-            )
+            metrics = accumulated_metrics()
             if not batch.complete:
                 if not batch.questions:
                     raise NoNewQuestions("El lote no consiguió preguntas nuevas")

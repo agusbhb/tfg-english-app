@@ -1,5 +1,10 @@
 # Copia, restauración y ensayos aislados de TrAIner
 
+**Actualización de seguridad preparada (2026-11-24):** MongoDB 8.0.38 y PyMongo
+4.18.3. Antes de ejecutar `docker compose up` sobre el entorno habitual, seguir
+el apartado final «Actualización segura de desarrollo a MongoDB 8.0.38».
+El contenedor y volumen habituales no se han actualizado durante las pruebas.
+
 **Proveedor vigente (2026-11-23): Anthropic directo**, según el procedimiento
 siguiente. Los apartados posteriores con OpenRouter, `preview_openrouter` y
 `--proveedor` se conservan como historial de los ensayos y ya no son comandos
@@ -1081,3 +1086,126 @@ el nombre del proyecto. Ctrl+C interrumpe el cliente, pero no revoca una petici�
 enviada al proveedor. Una futura repetición solo debe hacerse tras revisar el fallo,
 retirar el ensayo anterior y volver a autorizar el gasto. El .env habitual permanece
 con BANK_REFILL_ENABLED=false en todo momento.
+
+## Actualización segura de desarrollo a MongoDB 8.0.38 — 2026-11-24
+
+**Preparada y ensayada, no aplicada al entorno habitual.** Los Compose activos
+(habitual, test y demo) fijan 8.0.38; el overlay de ensayo hereda la imagen de test.
+Se elige la última revisión pública 8.0 de las notas oficiales consultadas;
+8.0.39 es solo Atlas. Sigue siendo un replica set de un miembro con la misma base,
+usuarios, credenciales, nombre de proyecto y volumen. No cambia FCV ni el esquema
+funcional. PyMongo pasa a4.18.3 y pip a26.3 en ambas imágenes Python.
+
+Fuentes de selección:
+- https://www.mongodb.com/docs/v8.0/release-notes/8.0/
+- https://pymongo.readthedocs.io/en/4.18.3/changelog.html
+- https://pip.pypa.io/en/stable/news/
+
+Ensayo efectivamente realizado: volumen nombrado EXCLUSIVO de proyecto
+trainer-security-upgrade-24b42a4a, MongoDB8.0.15 →8.0.38 conservando ese mismo volumen.
+Con datos ficticios se guardaron usuario, resultado, pendiente, borrador y cursor;
+se hizo mongodump antes del cambio y mongorestore a otra base después. Se restauraron
+31 documentos; el comprobador existente verificó documentos e índices idénticos
+antes de arrancar la aplicación y login/perfil/resultado/borrador/entrega operativos.
+El volumen del ensayo se retiró; archivo y estado de prueba permanecen en
+.tools/security-upgrade-proof/24b42a4a3ec644a4b384ca8cdabf489c, excluido de Git.
+El primer arnés privado usó nombres fuera del prefijo permitido y fue bloqueado;
+se corrigieron los nombres del arnés, sin relajar el comprobador de restauración.
+
+### Procedimiento manual en PowerShell (no ejecutado sobre desarrollo)
+
+Ejecutar en la raíz. Mantener BANK_REFILL_ENABLED=false; no copiar .env.example ni
+volver a generar credenciales. Conservar el .env normal y su COMPOSE_FILE con el
+overlay CA, .env.schema2 y .env.schema3. No ejecutar un up general antes del backup:
+el Compose ya apunta a8.0.38 y podría recrear MongoDB.
+
+1. Construir imágenes nuevas sin arrancar servicios. Si MongoDB está detenido,
+   arrancar únicamente SU CONTENEDOR EXISTENTE con start (no up):
+
+```powershell
+$ErrorActionPreference = 'Stop'
+docker compose build backend frontend
+if ($LASTEXITCODE -ne 0) { throw 'Fallo de construcción' }
+docker compose start --wait mongodb
+if ($LASTEXITCODE -ne 0) { throw 'No existe/arranca el MongoDB habitual; detener el procedimiento' }
+docker compose --profile tools stop frontend backend mongo-express
+if ($LASTEXITCODE -ne 0) { throw 'No se detuvieron todos los escritores; no hacer la copia' }
+$mongoAntes = docker compose ps -q mongodb
+if (-not $mongoAntes) { throw 'MongoDB no está disponible' }
+$volumenAntes = (docker inspect $mongoAntes | ConvertFrom-Json)[0].Mounts |
+    Where-Object { $_.Destination -eq '/data/db' -and $_.Type -eq 'volume' } |
+    Select-Object -ExpandProperty Name
+if (-not $volumenAntes) { throw 'No se identificó el volumen de datos' }
+```
+
+2. Con los escritores detenidos, inventariar y copiar la base. La copia de .env es
+   privada: contiene secretos y debe permanecer dentro de .tools.
+
+```powershell
+$copia = Join-Path (Get-Location) ('.tools/pre-mongo-8.0.38-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+New-Item -ItemType Directory -Path $copia | Out-Null
+Copy-Item -LiteralPath .env -Destination (Join-Path $copia 'env.bak')
+$inventario = docker compose run --rm --no-deps -T backend python -m scripts.data_snapshot
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo inventariar la base' }
+$inventario | Set-Content -LiteralPath (Join-Path $copia 'before.json') -Encoding utf8
+$dump = 'mongodump --host localhost --username "$MONGO_APP_USER" --password "$MONGO_APP_PASSWORD" --authenticationDatabase "$MONGODB_DB" --db "$MONGODB_DB" --archive=/tmp/trainer-pre-upgrade.archive.gz --gzip'
+docker compose exec -T mongodb sh -c $dump
+if ($LASTEXITCODE -ne 0) { throw 'Copia fallida; no actualizar' }
+docker compose cp mongodb:/tmp/trainer-pre-upgrade.archive.gz (Join-Path $copia 'backup.archive.gz')
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo copiar el archivo al host' }
+Get-FileHash -LiteralPath (Join-Path $copia 'backup.archive.gz') -Algorithm SHA256
+```
+
+El archivo se obtiene con la herramienta del contenedor anterior; las credenciales
+se resuelven dentro de él y no se imprimen. Mantener el archivo fuera del volumen
+que se va a actualizar. La copia se hace sin escrituras de API ni Mongo Express.
+
+3. Actualizar SOLO MongoDB y verificar el mismo volumen, versión y contenido antes
+   de abrir la aplicación. No borrar volúmenes ni cambiar proyecto/base:
+
+```powershell
+docker compose pull mongodb
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo descargar la imagen' }
+docker compose up -d --no-deps --wait mongodb
+if ($LASTEXITCODE -ne 0) { throw 'MongoDB no está sano; mantener la API detenida' }
+$mongoDespues = docker compose ps -q mongodb
+$volumenDespues = (docker inspect $mongoDespues | ConvertFrom-Json)[0].Mounts |
+    Where-Object { $_.Destination -eq '/data/db' -and $_.Type -eq 'volume' } |
+    Select-Object -ExpandProperty Name
+if ($volumenDespues -ne $volumenAntes) { throw 'El volumen ha cambiado; detener el procedimiento' }
+docker compose exec -T mongodb mongod --version
+Get-Content -LiteralPath (Join-Path $copia 'before.json') -Raw |
+    docker compose run --rm --no-deps -T backend python -m scripts.data_snapshot --compare-stdin
+if ($LASTEXITCODE -ne 0) { throw 'Inventario distinto; no abrir la aplicación' }
+docker compose up -d --no-deps backend frontend
+if ($LASTEXITCODE -ne 0) { throw 'No se pudo arrancar la aplicación' }
+Invoke-RestMethod http://localhost:8000/health
+```
+
+Comprobar en http://localhost:5173 login/perfil y lectura/continuación de un intento
+existente; retomar y entregar no avanzan cursor. Crear uno nuevo sí reserva preguntas.
+Si se necesita la interfaz administrativa, arrancarla después de las comprobaciones:
+`docker compose --profile tools up -d --no-deps mongo-express`.
+
+No se activa el LLM con este procedimiento. Antes de una llamada real hay que volver
+a verificar el flag y autorizar el ensayo correspondiente.
+
+### Recuperación y siguientes ensayos
+
+Si falla la actualización, conservar la copia y detener los escritores. No ejecutar
+8.0.15 directamente sobre el volumen ya actualizado, ni hacer down -v. Preparar otro
+proyecto y volumen vacíos con configuración conocida, inicializar sus usuarios
+MongoDB con la configuración privada preservada y restaurar el archivo allí con
+mongorestore --gzip --archive=... --stopOnError. Verificar contenido/índices y login
+antes de decidir cambiar el volumen del entorno habitual. La restauración no se
+hace con --drop sobre la base de desarrollo. El procedimiento genérico reproducible
+con datos ficticios sigue disponible:
+
+```powershell
+./scripts/Test-BackupRestore.ps1 -BuildOverride .tools/compose.test.ca.yml
+```
+
+Los metadatos de generación nuevos son aditivos y el backend actualizado lee los
+anteriores con valores por defecto. Un backend antiguo con modelos estrictos no
+es una vía de rollback segura sobre documentos nuevos: recuperar también la versión
+de código compatible o la copia previa en un volumen separado.

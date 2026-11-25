@@ -2,7 +2,7 @@
 name: trainer-refill-demo
 services:
   mongodb:
-    image: mongo:8.0.15
+    image: mongo:8.0.38
     entrypoint: [bash, /opt/trainer/mongo-replica.sh]
     environment:
       MONGO_REPLICA_SET: trainer-demo

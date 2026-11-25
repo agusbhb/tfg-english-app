@@ -18,10 +18,17 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+      - name: Construir entorno backend
+        run: docker compose -p trainer-tests -f compose.test.yml build tests
+      - name: Ruff y formato backend
+        run: >-
+          docker compose -p trainer-tests -f compose.test.yml run --rm --no-deps tests
+          sh -c 'ruff check backend/app backend/scripts backend/tests &&
+          ruff format --check backend/app backend/scripts backend/tests'
       - name: Pruebas con MongoDB aislado
         run: >-
           docker compose -p trainer-tests -f compose.test.yml up
-          --build --abort-on-container-exit --exit-code-from tests --attach tests
+          --no-build --abort-on-container-exit --exit-code-from tests --attach tests
       - name: Extraer cobertura del contenedor
         run: docker compose -p trainer-tests -f compose.test.yml cp tests:/workspace/coverage.xml coverage.xml
       - name: Comprobar rutas de cobertura

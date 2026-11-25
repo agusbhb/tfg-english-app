@@ -33,6 +33,22 @@ function Set-EnvValue([string]$Text, [string]$Name, [string]$Value) {
     return $Text.TrimEnd() + [Environment]::NewLine + "$Name=$Value" + [Environment]::NewLine
 }
 
+function Preserve-ComposeConfiguration([hashtable]$taskExisting) {
+    # Conservar el stack local existente, incluida la CA de build y ejecución.
+    # Nunca adoptar por accidente los Compose aislados de pruebas/demo.
+    if ($taskExisting['COMPOSE_FILE']) {
+        $taskSeparator = if ($taskExisting['COMPOSE_PATH_SEPARATOR']) { $taskExisting['COMPOSE_PATH_SEPARATOR'] } else { [IO.Path]::PathSeparator.ToString() }
+        $taskComposeFiles = $taskExisting['COMPOSE_FILE'].Split([string[]]@($taskSeparator), [StringSplitOptions]::RemoveEmptyEntries)
+        if ($taskComposeFiles.Count -eq 0 -or $taskComposeFiles[0] -ne 'docker-compose.yml') { throw 'COMPOSE_FILE existente no corresponde al stack habitual; revisarlo antes de adoptar.' }
+        foreach ($taskComposeFile in $taskComposeFiles) {
+            $taskResolved = [IO.Path]::GetFullPath((Join-Path $taskRoot $taskComposeFile))
+            if (-not $taskResolved.StartsWith($taskRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $taskResolved -PathType Leaf)) { throw 'Un overlay existente no está disponible dentro del proyecto; no se ha cambiado .env.' }
+        }
+        $taskNewValues['COMPOSE_FILE'] = $taskExisting['COMPOSE_FILE']
+        if ($taskExisting['COMPOSE_PATH_SEPARATOR']) { $taskNewValues['COMPOSE_PATH_SEPARATOR'] = $taskSeparator }
+    }
+}
+
 $taskSource = [System.IO.Path]::GetFullPath((Join-Path $taskRoot $SourceEnv))
 $taskDestination = [System.IO.Path]::GetFullPath((Join-Path $taskRoot $DestinationEnv))
 foreach ($taskPath in @($taskSource, $taskDestination)) {
@@ -92,11 +108,13 @@ $taskNewValues = @{
     ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
     ANTHROPIC_MAX_TOKENS = '4096'
 }
+Preserve-ComposeConfiguration $taskValues
 if (Test-Path -LiteralPath $taskDestination) {
     $taskExisting = Read-EnvValues ([System.IO.File]::ReadAllText($taskDestination))
     foreach ($taskName in @('ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_MAX_TOKENS')) {
         if ($taskExisting.ContainsKey($taskName) -and $taskExisting[$taskName]) { $taskNewValues[$taskName] = $taskExisting[$taskName] }
     }
+    Preserve-ComposeConfiguration $taskExisting
     $taskBackupDirectory = Join-Path $taskRoot '.tools'
     New-Item -ItemType Directory -Force -Path $taskBackupDirectory | Out-Null
     $taskBackup = Join-Path $taskBackupDirectory ("env-before-anthropic-" + [guid]::NewGuid().ToString('N') + '.bak')

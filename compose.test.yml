@@ -1,7 +1,7 @@
 # Proyecto independiente: docker compose -p trainer-tests -f compose.test.yml ...
 services:
   mongodb-test:
-    image: mongo:8.0.15
+    image: mongo:8.0.38
     entrypoint: [bash, /opt/trainer/mongo-replica.sh]
     environment:
       MONGO_REPLICA_SET: trainer-test

@@ -179,8 +179,24 @@ class GenerationError(Model):
     mensaje: str = Field(min_length=1, max_length=500)
 
 
+class GenerationRoundMetrics(Model):
+    ronda: PositiveInt
+    solicitadas: Counter
+    recibidas: Counter | None = None
+    duplicadas: Counter = 0
+    rechazadas_contrato: Counter = 0
+    descartadas_cuota: Counter = 0
+    candidatas_acumuladas: Counter = 0
+    id_llamada: str | None = Field(default=None, max_length=200)
+    stop_reason: str | None = Field(default=None, max_length=200)
+    tokens_entrada: Counter | None = None
+    tokens_salida: Counter | None = None
+    coste_estimado_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    error_codigo: str | None = Field(default=None, max_length=64)
+
+
 class GenerationMetrics(GenerationReference):
-    """Un registro por intento; None significa dato desconocido, nunca coste cero."""
+    """Acumulado del trabajo; None significa dato desconocido, nunca coste cero."""
 
     creado_en: UTCDate
     latencia_ms: Counter
@@ -191,6 +207,13 @@ class GenerationMetrics(GenerationReference):
     preguntas_recibidas: Counter
     preguntas_validas: Counter
     preguntas_rechazadas_contrato: Counter = 0
+    preguntas_descartadas_duplicadas: Counter = 0
+    preguntas_descartadas_cuota: Counter = 0
+    preguntas_recibidas_completas: StrictBool | None = None
+    tokens_entrada_conocidos: Counter | None = None
+    tokens_salida_conocidos: Counter | None = None
+    rondas_consumidas: Counter = 0
+    rondas: list[GenerationRoundMetrics] = Field(default_factory=list, max_length=5)
     errores: list[GenerationError] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")

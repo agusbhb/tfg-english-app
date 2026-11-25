@@ -185,12 +185,16 @@ class GenerationBatch:
         )
 
     def total(self, name):
-        values = [getattr(response, name) for response in self.responses]
+        values = [round_.get(name) for round_ in self.rounds]
         return sum(values) if values and all(value is not None for value in values) else None
+
+    def known_total(self, name):
+        values = [r[name] for r in self.rounds if r.get(name) is not None]
+        return sum(values) if values else None
 
     @property
     def received(self):
-        return sum(round_["recibidas"] for round_ in self.rounds)
+        return sum(round_["recibidas"] or 0 for round_ in self.rounds)
 
     @property
     def rejected(self):
@@ -202,10 +206,18 @@ class GenerationBatch:
 
 
 async def collect_generation_batch(
-    database, bank, provider, quantity, generation_id, max_rounds=1, before_call=None
+    database,
+    bank,
+    provider,
+    quantity,
+    generation_id,
+    max_rounds=1,
+    before_call=None,
+    progress=None,
+    round_offset=0,
 ):
     """Acumular solo candidatas nuevas. No abre transacciones ni escribe en MongoDB."""
-    result = GenerationBatch(quantity)
+    result = progress if progress is not None else GenerationBatch(quantity)
     for _ in range(max_rounds):
         remaining = quantity - len(result.questions)
         if remaining == 0:
@@ -231,18 +243,69 @@ async def collect_generation_batch(
         result.trace = trace
         if before_call is not None:
             await before_call()
-        response = GenerationResponse.model_validate(
-            await provider.generate(
-                GenerationRequest(
-                    str(generation_id),
-                    text,
-                    parameters,
-                    generation_output_schema(parameters),
-                    ronda=len(result.responses) + 1,
-                    validacion_parcial=True,
+        round_ = {
+            "ronda": round_offset + len(result.rounds) + 1,
+            "solicitadas": remaining,
+            "distribucion_solicitada": parameters.distribucion,
+            "recibidas": None,
+            "duplicadas": 0,
+            "rechazadas_contrato": 0,
+            "rechazos_contrato": [],
+            "descartadas_cuota": 0,
+            "candidatas_acumuladas": len(result.questions),
+            "id_llamada": None,
+            "stop_reason": None,
+            "tokens_entrada": None,
+            "tokens_salida": None,
+            "coste_estimado_usd": None,
+            "error_codigo": "ronda_interrumpida",
+        }
+        result.rounds.append(round_)
+        try:
+            response = GenerationResponse.model_validate(
+                await provider.generate(
+                    GenerationRequest(
+                        str(generation_id),
+                        text,
+                        parameters,
+                        generation_output_schema(parameters),
+                        ronda=round_["ronda"],
+                        validacion_parcial=True,
+                    )
                 )
             )
+        except Exception as error:
+            # Solo metadatos controlados; nunca mensajes, cuerpos ni cabeceras del proveedor.
+            diagnostic = getattr(error, "diagnostic", None) or {}
+            for key in ("tokens_entrada", "tokens_salida"):
+                value = diagnostic.get(key)
+                if type(value) is int and value >= 0:
+                    round_[key] = value
+            received = diagnostic.get("preguntas_recibidas")
+            if type(received) is int and received >= 0:
+                round_["recibidas"] = received
+            for key in ("id_llamada", "stop_reason"):
+                if isinstance(diagnostic.get(key), str):
+                    round_[key] = diagnostic[key][:200]
+            for name in ("tokens_entrada", "tokens_salida", "preguntas_recibidas"):
+                value = diagnostic.get(name)
+                if type(value) is int and value >= 0:
+                    round_["recibidas" if name == "preguntas_recibidas" else name] = value
+            for name in ("id_llamada", "stop_reason"):
+                if isinstance(diagnostic.get(name), str):
+                    round_[name] = diagnostic[name][:200]
+            round_["error_codigo"] = "proveedor_error"
+            raise
+        result.responses.append(response)
+        round_.update(
+            {
+                name: getattr(response, name)
+                for name in ("tokens_entrada", "tokens_salida", "coste_estimado_usd", "id_llamada")
+            }
         )
+        raw_questions = response.payload.get("preguntas")
+        if isinstance(raw_questions, list):
+            round_["recibidas"] = len(raw_questions)
         payload = validate_generation_envelope(response.payload)
         valid = []
         rejected = []
@@ -259,7 +322,6 @@ async def collect_generation_batch(
                         "errores": question_contract_errors(error),
                     }
                 )
-        result.responses.append(response)
         accepted_keys = {sentence_key(q.enunciado) for q in result.questions}
         duplicates = 0
         overflow = 0
@@ -288,7 +350,7 @@ async def collect_generation_batch(
             if combined
             else []
         )
-        result.rounds.append(
+        round_.update(
             {
                 "solicitadas": remaining,
                 "distribucion_solicitada": parameters.distribucion,
@@ -298,6 +360,7 @@ async def collect_generation_batch(
                 "rechazos_contrato": rejected,
                 "descartadas_cuota": overflow,
                 "candidatas_acumuladas": len(result.questions),
+                "error_codigo": None,
                 "id_llamada": response.id_llamada,
                 "tokens_entrada": response.tokens_entrada,
                 "tokens_salida": response.tokens_salida,

@@ -4,7 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN --mount=type=secret,id=pip_ca_bundle \
     if [ -f /run/secrets/pip_ca_bundle ]; then export PIP_CERT=/run/secrets/pip_ca_bundle; fi; \
-    pip install --no-cache-dir -r requirements.txt
+    python -m pip install --no-cache-dir --upgrade pip==26.3 && \
+    python -m pip install --no-cache-dir -r requirements.txt
 RUN useradd --create-home --uid 10001 trainer
 COPY --chown=trainer:trainer . .
 USER trainer

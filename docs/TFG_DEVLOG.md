@@ -2844,3 +2844,100 @@ en desarrollo, cambios de README ni operaciones Git de escritura. La reposición
 real del disparador queda PENDIENTE de autorización expresa y de revisar su informe.
 Procedimiento reproducible y limpieza en COPIA_RESTAURACION.md. Se conserva el estado
 previo no confirmado del repositorio; seguimiento actualizado.
+
+## 2026-11-24 — Correcciones autorizadas antes del PR: seguridad y métricas
+
+### Versiones y alcance
+- MongoDB 8.0.15 →8.0.38 en Compose habitual, test y demo. El ensayo automático
+  hereda test. Es la última revisión pública 8.0 en las notas oficiales consultadas;
+  8.0.39 (18 de noviembre) figura como Atlas Only. Imagen oficial confirmada en
+  Docker Registry. Se conservan replica set, inicialización, índices y volúmenes.
+- PyMongo 4.18.2 →4.18.3, parche de BSON Regex/CVE-2026-106435 sin migración de API.
+- pip25.0.1 →26.3 fijado antes de instalar requisitos en Dockerfile normal y de test.
+  TLS/CA continúan activos. No se añade pip como dependencia de aplicación.
+- Frontend: ESLint10.12.0 →10.15.0, @vue/test-utils2.5.1 →2.6.0 y Happy DOM20.14.6
+  →21.0.4. El cambio mayor de Happy DOM es necesario para los avisos identificados;
+  sus nuevas restricciones predeterminadas de carga CSS/iframe no afectan a la suite.
+- Tras esas actualizaciones quedaban cinco avisos moderados en la cadena de
+  js-beautify. Overrides limitados a esa cadena: glob14.0.6 y minimatch11.0.9 dentro
+  de editorconfig. No se fuerza todo el árbol ni se usa npm audit fix --force.
+  Es una excepción transitoria de dependencias dev: retirar al corregirse los rangos
+  upstream. Se verifica wrapper.html() con una prueba adicional; Vue/Vue Router y
+  el flujo funcional se conservan. package-lock actualizado; npm ci reproducible.
+
+### Conservación de métricas
+El colector crea una entrada de ronda después de reservar presupuesto y antes de
+llamar al proveedor. El worker recibe una referencia al progreso en memoria y puede
+resumirlo aunque una ronda posterior lance una excepción o agote el timeout.
+Se conservan recibidas conocidas, candidatas, rechazos, duplicados y excedentes.
+Cada ronda registra ID/stop_reason si están disponibles y consumo comunicado.
+No se persisten cuerpos, cabeceras ni mensajes arbitrarios de errores del proveedor.
+
+Tokens totales permanecen null si alguna ronda no informa consumo; los campos
+*_conocidos conservan el subtotal comunicado (null si no hay ninguno). Cero solo
+se utiliza si el proveedor lo comunica. preguntas_recibidas es la suma observada;
+preguntas_recibidas_completas distingue si se conoce el conteo de todas las rondas.
+Se añaden campos con valores por defecto para leer métricas anteriores sin migración.
+
+La trazabilidad/métricas acumulan reintentos del mismo generacion_id, con numeración
+de rondas durable; se conservan errores previos y límites existentes (hasta cinco
+rondas configurables, error agregado acotado a50). Las candidatas válidas representan
+el intento de generación actual; las rondas guardan los valores anteriores. No se
+persisten candidatas para recuperarlas tras caída ni se crean prompts de completado.
+El snapshot de trazabilidad se toma del colector que hizo la llamada. Publicación
+sigue exacta/transaccional, y no escribe Progreso o Tests. Preview adjunta métricas
+acumuladas al diagnóstico controlado del fallo. Ninguna llamada real realizada.
+
+### CI y TLS
+El workflow construye el contenedor de test y ejecuta ruff check y ruff format
+--check antes de pytest. Después usa --no-build; pytest se ejecuta una sola vez.
+Cobertura, artefactos y SonarCloud conservados; Actionlint correcto.
+Use-Phase3Environment conserva COMPOSE_FILE/COMPOSE_PATH_SEPARATOR compatibles del
+origen y del destino (prioridad al destino), incluida la CA. Comprueba paths locales
+existentes y base docker-compose.yml; bloquea stacks incompatibles o overlays ausentes
+antes de escribir. Prueba PowerShell usa únicamente entorno y certificado ficticios,
+conserva secretos de prueba y verifica bloqueo por volumen ausente. .env real intacto.
+
+### Evidencia ejecutada
+- Backend completo:357 passed, una advertencia Starlette/TestClient,75,69s. Frente a
+  auditoría350, siete regresiones nuevas:29 candidatas y fallo segunda ronda con/sin
+  consumo comunicado, variantes de contrato/duplicados/excedentes, reintento, timeout
+  y preview sin escritura. Cursor, snapshots y banco sin publicación parcial.
+- Cobertura de líneas backend/app:1497/1555=96,27 % (anterior95,95 %). XML válido,
+  17 archivos resueltos. No incluye scripts ni es cobertura de ramas.
+- Frontend:78 passed (antes77), líneas98,40 %, ramas93,42 %, sin descenso; ESLint,
+  Prettier, build y LCOV correctos. El archivo nuevo necesitó Prettier antes de la
+  ejecución final satisfactoria; no se relajó ninguna regla.
+- Ruff/formato43 archivos correctos, Actionlint y Compose habitual/réplica/demo/ensayo
+  válidos. Imágenes construidas en proyectos trainer-security-build/fixes, sin
+  reemplazar los contenedores/imágenes etiquetadas del proyecto habitual.
+- pip check correcto; pip-audit sin vulnerabilidades conocidas (antes PyMongo ypip).
+  npm audit completo y --omit=dev:0 avisos (antes8:7 moderados y1 alto).
+  Bandit sin hallazgos. Las instalaciones efímeras muestran el aviso normal de pip
+  sobre root; no se ha suprimido. Advertencia Starlette continúa pendiente.
+
+### Ensayo de actualización y restauración
+Con MongoDB8.0.15 en volumen EXCLUSIVO de proyecto trainer-security-upgrade-24b42a4a
+se crearon usuario ficticio, resultado completado, pendiente con borrador y progreso.
+Se hizo dump, se recreó ese mismo servicio con8.0.38 conservando el volumen y se
+restauró el archivo en otra base.31 documentos restaurados,0 errores. Documentos e
+índices idénticos antes del arranque; aplicación verificó login, perfil, resultado,
+borrador y entrega. Comprobador reutilizado sin relajar sus guardas. Primer arnés
+privado bloqueado por un prefijo de BD incorrecto; corregido solo el nombre de ensayo.
+Evidencia privada en .tools/security-upgrade-proof/24b42a4a3ec644a4b384ca8cdabf489c.
+El volumen temporal se retiró. No se leyó ni modificó contenido real para este ensayo.
+
+### Estado y límites
+Contenedor habitual consultado de solo lectura: sigue mongo:8.0.15, detenido. Su
+configuración mantiene BANK_REFILL_ENABLED=false, igual que .env. No se actualizó
+volumen, credencial ni contenedor de desarrollo. Procedimiento seguro manual con
+inventario, copia previa, mismo volumen y comparación antes/después en la guía.
+No ejecutar un up habitual antes del backup. No se modifica FCV, README, contratos
+legados, herramientas de recuperación, prompts o funcionalidad. Sin Git de escritura.
+CI/Sonar remoto y actualización real de desarrollo siguen pendientes del autor.
+
+Fuentes primarias:
+- https://www.mongodb.com/docs/v8.0/release-notes/8.0/
+- https://pymongo.readthedocs.io/en/4.18.3/changelog.html
+- https://pip.pypa.io/en/stable/news/
+- https://github.com/capricorn86/happy-dom/releases/tag/v21.0.4

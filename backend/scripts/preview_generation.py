@@ -13,7 +13,7 @@ from app.anthropic import AnthropicError, AnthropicProvider
 from app.bank_contracts import BankMetadataDocument, modality_counts
 from app.config import Settings
 from app.database import create_client
-from app.generation import collect_generation_batch
+from app.generation import GenerationBatch, collect_generation_batch
 
 
 def text_capture(directory, records):
@@ -39,6 +39,7 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
     if settings.bank_refill_enabled:
         raise ValueError("Mantén BANK_REFILL_ENABLED=false durante el ensayo manual")
     client = create_client(settings)
+    batch = GenerationBatch(quantity)
     try:
         database = client[settings.mongodb_db]
         banks = (
@@ -62,6 +63,7 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
                 quantity,
                 ObjectId(),
                 max_rounds=settings.bank_generation_max_rounds if complete_batch else 1,
+                progress=batch,
             )
         response = batch.responses[-1]
         return {
@@ -76,6 +78,8 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
             "id_llamada": response.id_llamada,
             "tokens_entrada": batch.total("tokens_entrada"),
             "tokens_salida": batch.total("tokens_salida"),
+            "tokens_entrada_conocidos": batch.known_total("tokens_entrada"),
+            "tokens_salida_conocidos": batch.known_total("tokens_salida"),
             "prompt_version": batch.trace.prompt_version,
             "preguntas_recibidas": batch.received,
             "preguntas_descartadas_duplicadas": batch.duplicate_count,
@@ -98,6 +102,23 @@ async def preview(settings, provider, quantity=5, complete_batch=False):
             "rondas": batch.rounds,
             "preguntas": [question.model_dump() for question in batch.questions],
         }
+    except AnthropicError as error:
+        error.diagnostic = {
+            **(error.diagnostic or {}),
+            "metricas_acumuladas": {
+                "preguntas_recibidas": batch.received,
+                "preguntas_candidatas": len(batch.questions),
+                "preguntas_rechazadas_contrato": batch.rejected,
+                "preguntas_descartadas_duplicadas": batch.duplicate_count,
+                "preguntas_descartadas_cuota": sum(r["descartadas_cuota"] for r in batch.rounds),
+                "tokens_entrada": batch.total("tokens_entrada"),
+                "tokens_salida": batch.total("tokens_salida"),
+                "tokens_entrada_conocidos": batch.known_total("tokens_entrada"),
+                "tokens_salida_conocidos": batch.known_total("tokens_salida"),
+                "rondas": batch.rounds,
+            },
+        }
+        raise
     finally:
         await client.close()
 
